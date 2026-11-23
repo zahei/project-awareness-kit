@@ -33,8 +33,8 @@ Lean routing markers       • pak-atlas     (reuse lookup)         • verify_i
                            • pak-domains   (corner cases)           - Codegen sync (proto/sqlc/prisma)
                            • pak-bootstrap (1-time audit)           - Optional UUIDv7 & regex rules
                                     │                               - Optional multi-locale i18n parity
-                                    ▼                               - Auto-refreshes docs/atlas/*
-                           Living Repo Knowledge (Self-Evolving)
+                                    ▼                               - Auto-refreshes docs/atlas/00..04
+                           Living Repo Knowledge (Self-Evolving)    - Structural-evolution dossier gate
                            • docs/atlas/00..04_*.md (symbols, contracts & live reverse-dependent graph)
                            • docs/domains/*.md      (self-routing ≤160-line workflows & corner cases)
 ```
@@ -100,10 +100,38 @@ After running `pak init` on an existing repository, open `agy`, `claude`, or `co
 > `"Activate the pak-bootstrap skill to audit this codebase, quarantine dead docs/paths in pak.config.json, and write docs/domains/*.md dossiers."`
 
 What `pak-bootstrap` does automatically:
-1. Runs `scripts/pak/build_atlas.py` (`0` tokens) to map all live functions, types, tables, and endpoints.
+1. Runs `scripts/pak/build_atlas.py` (`0` tokens) to map all live functions, types, tables, endpoints, and internal module dependencies (`04_DEPENDENCY_GRAPH.md`).
 2. Cross-checks existing `.md` files against actual build files and migrations—fixing stale documentation and quarantining dead prototype folders in `pak.config.json`.
-3. Writes concise (`≤160 lines`), code-verified `docs/domains/<domain>.md` dossiers capturing workflows, formulas, and corner cases.
+3. Writes concise (`≤160 lines`), self-routing `docs/domains/<domain>.md` dossiers capturing workflows, formulas, and corner cases.
 4. Populates `.agents/skills/pak-impact/references/dependency-matrix.md` with implicit runtime couplings.
+
+---
+
+## How `pak` Evolves Automatically as Your Project Grows
+
+You never have to manually edit `AGENTS.md` or `SKILL.md` files as your architecture expands. `pak` keeps project memory and blast-radius awareness synchronized automatically through three mechanisms:
+
+### 1. Auto-Generated Dependency & Reverse-Dependent Graph (`04_DEPENDENCY_GRAPH.md`)
+On every check/turn, `build_atlas.py` parses internal `import` / `use` statements across **Go**, **TypeScript/JavaScript/React**, **Python**, and **Rust** (`0` LLM tokens) to maintain `docs/atlas/04_DEPENDENCY_GRAPH.md`:
+- **Outbound Imports:** `Package / Page -> Dependencies`
+- **Reverse Dependents (`<-`):** Instant *"Who imports module/component `X`?"* blast-radius map before editing any shared code.
+
+### 2. Self-Routing Domain Dossiers (`> **Paths:**` Metadata)
+Each file in `docs/domains/*.md` declares the paths it owns at the top of the file:
+
+```markdown
+# Domain Dossier: Payments & Billing
+
+> **Paths:** `internal/payments/|proto/billing\.proto|web/src/pages/Billing`
+> **Summary:** Stripe webhook idempotency, invoice state machine, and retry rules.
+```
+
+Whenever a new domain file is added to `docs/domains/`, `build_atlas.py` automatically registers it in `docs/atlas/00_SYSTEM_MAP.md` and `pak trace` (`blast_radius.sh`) routes matching queries and files to it dynamically—zero skill or script edits required.
+
+### 3. Mechanical Structural-Evolution Gate (`Stop` Hook)
+Whenever an AI turn modifies **DB migrations / API schemas** (`.sql`, `.proto`, `.prisma`, `.graphql`), creates a **new source module/component**, or introduces a **new internal dependency edge** in `04_DEPENDENCY_GRAPH.md`—without updating any `docs/domains/*.md` dossier or `dependency-matrix.md`—`verify_impact.sh` blocks the `Stop` hook once (`agy` and `claude`) so the agent updates the affected domain dossier (or creates a new one) in the same commit.
+- Loop-safe: Honors `continuationActive` (Antigravity) and `stop_hook_active` (Claude Code) so pure refactors never cause infinite loops.
+- CI / CLI flags: Set `PAK_STRICT_DOCS=1` to enforce strict dossier updates in CI/CLI mode, or `PAK_ACK_NO_DOC_IMPACT=1` to acknowledge a pure structural refactor with no domain-workflow change.
 
 ---
 
@@ -112,9 +140,9 @@ What `pak-bootstrap` does automatically:
 ```bash
 pak init [dir]          # Interactive (or --yes) setup in target repository
 pak install-cli         # Symlink `pak` into ~/.local/bin/pak
-pak atlas [dir]         # Regenerate docs/atlas/* (<0.5s, 0 tokens)
-pak trace <query> [dir] # Trace reusable symbols, callers, schemas & domain dossiers
-pak check [dir]         # Run deterministic codegen, quarantined-path, custom regex & i18n checks
+pak atlas [dir]         # Regenerate docs/atlas/00..04_*.md (<0.5s, 0 tokens)
+pak trace <query> [dir] # Trace reusable symbols, reverse dependents, schemas & domain dossiers
+pak check [dir]         # Run deterministic codegen, dependency-graph, regex, i18n & evolution checks
 pak uninstall [dir]     # Cleanly remove pak blocks, skills, and scripts
 ```
 
