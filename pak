@@ -97,7 +97,7 @@ def upsert_markdown_block(file_path: Path, block_text: str, header_if_new: str =
         existing = file_path.read_text(encoding="utf-8")
         if PAK_MD_START in existing and PAK_MD_END in existing:
             before = existing.split(PAK_MD_START)[0].rstrip()
-            after = existing.split(PAK_MD_END, 1)[1].lstrip()
+            after = existing.split(PAK_MD_END, 1)[1].strip()
             parts = [p for p in (before, block, after) if p]
             file_path.write_text("\n\n".join(parts) + "\n", encoding="utf-8")
         else:
@@ -113,7 +113,7 @@ def remove_markdown_block(file_path: Path) -> None:
     txt = file_path.read_text(encoding="utf-8")
     if PAK_MD_START in txt and PAK_MD_END in txt:
         before = txt.split(PAK_MD_START)[0].rstrip()
-        after = txt.split(PAK_MD_END, 1)[1].lstrip()
+        after = txt.split(PAK_MD_END, 1)[1].strip()
         merged = "\n\n".join(p for p in (before, after) if p).strip()
         if merged:
             file_path.write_text(merged + "\n", encoding="utf-8")
