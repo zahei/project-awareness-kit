@@ -827,7 +827,7 @@ def mine_git_cochanges(
             continue
         if not ln or is_skipped(ln, cfg):
             continue
-        if ln.startswith(("docs/atlas/", ".agents/", ".claude/")) or "/locales/" in ln:
+        if ln.startswith(("docs/atlas/", ".agents/", ".agent/", ".claude/", "scripts/pak/")) or "/locales/" in ln or ln in ("AGENTS.md", "CLAUDE.md", "GEMINI.md", "pak.config.json"):
             continue
         cur.add(ln)
     if 2 <= len(cur) <= 20:
