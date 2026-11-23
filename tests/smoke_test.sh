@@ -171,7 +171,7 @@ AFF_OUT="$(python3 "$KIT_DIR/pak" affected --run "$PROJ")"
 echo "$AFF_OUT" | grep -q "go test ./internal/service"
 (cd "$PROJ" && git checkout -- .)
 
-echo "==> [8/8] Verifying self-evolving new-domain routing & clean uninstall..."
+echo "==> [8/9] Verifying self-evolving new-domain routing..."
 mkdir -p "$PROJ/internal/payments"
 cat > "$PROJ/internal/payments/stripe.go" << 'EOF'
 package payments
@@ -190,8 +190,27 @@ EVO_PASS="$(echo '{"terminationReason":"NO_TOOL_CALL","continuationActive":false
 [ "$EVO_PASS" = '{"decision": "allow"}' ]
 python3 "$KIT_DIR/pak" trace "ChargeCustomerCard" "$PROJ" | grep -q "docs/domains/payments.md"
 
+echo "==> [9/9] Verifying 'pak status', 'pak upgrade' preservation guarantees & clean uninstall..."
+echo "# Custom Matrix Row: Billing <-> Ledger" >> "$PROJ/.agents/skills/pak-impact/references/dependency-matrix.md"
+python3 -c '
+import json, pathlib
+p = pathlib.Path("'"$PROJ"'/pak.config.json")
+d = json.loads(p.read_text())
+d["pak_version"] = "1.0.0"
+p.write_text(json.dumps(d, indent=2))
+'
+echo "# outdated script" > "$PROJ/scripts/pak/blast_radius.sh"
+python3 "$KIT_DIR/pak" status "$PROJ" | grep -q "upgrade available"
+
+python3 "$KIT_DIR/pak" upgrade "$PROJ"
+python3 "$KIT_DIR/pak" status "$PROJ" | grep -q "up to date"
+grep -q "Custom Matrix Row: Billing <-> Ledger" "$PROJ/.agents/skills/pak-impact/references/dependency-matrix.md"
+grep -q "Stripe charge lifecycle" "$PROJ/docs/domains/payments.md"
+grep -q '"enforce_uuid_v7": true' "$PROJ/pak.config.json"
+grep -q "INDEXED SYMBOLS, CONTRACTS & REVERSE DEPENDENTS" "$PROJ/scripts/pak/blast_radius.sh"
+
 python3 "$KIT_DIR/pak" uninstall "$PROJ"
 grep -q "Keep existing custom rule." "$PROJ/AGENTS.md"
 ! grep -q "PAK:START" "$PROJ/AGENTS.md"
 
-echo "==> ALL 8/8 PAK v2.0 SMOKE TESTS PASSED!"
+echo "==> ALL 9/9 PAK v2.1 SMOKE TESTS PASSED!"

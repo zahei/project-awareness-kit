@@ -178,10 +178,13 @@ pak init /path/to/your-project --yes --agents all --stage existing --hooks both 
 
 ---
 
-## 6. Complete CLI Reference
+## 6. Complete CLI Reference & Upgrading
 
 ```bash
+pak --version                    # Print installed global pak CLI version
 pak init [dir]                   # Interactive (or --yes) installer for any repository
+pak upgrade [dir...]             # Zero-prompt upgrade of engine, skills, hooks & rule blocks
+pak status [dir]                 # Show version alignment, hooks, SQLite index & dossier status
 pak link <sibling_repo...>       # Link sibling microservice repos for cross-repo contract tracing
 pak install-cli                  # Symlink `pak` into ~/.local/bin/pak
 pak atlas [dir]                  # Incrementally update .pak/index.sqlite & docs/atlas/00..05 (<50ms)
@@ -190,6 +193,15 @@ pak affected [--run] [dir]       # Print (or execute) ONLY unit tests impacted b
 pak check [dir]                  # Run all contract, duplicate, dependency, codegen, i18n & evolution gates
 pak uninstall [dir]              # Cleanly remove pak blocks, skills, SQLite cache, and scripts
 ```
+
+### Upgrading `pak` Over Time (System-Wide & Project-Level)
+1. **System-Wide CLI Upgrade:** `pak install-cli` creates a live symlink (`~/.local/bin/pak -> /path/to/project-awareness-kit/pak`). Editing or running `git pull` inside `project-awareness-kit` immediately updates the global CLI and templates.
+2. **Project-Level Engine & Rules Upgrade (`pak upgrade`):** Target repositories vendor `scripts/pak/*` and `.agents/skills/pak-*` so CI and teammates work without needing `pak` installed globally. Whenever `pak` gains new features, run:
+   ```bash
+   pak upgrade                             # Upgrade current repository
+   pak upgrade ~/projects/svc-a ~/projects/svc-b   # Batch-upgrade multiple microservices
+   ```
+   `pak upgrade` replaces `scripts/pak/*`, updates `SKILL.md` files, refreshes `<!-- PAK:START --> ... <!-- PAK:END -->` blocks in `AGENTS.md`/`GEMINI.md`/`CLAUDE.md`, updates lifecycle hooks, stamps `"pak_version"` in `pak.config.json`, and migrates `.pak/index.sqlite`—**while strictly preserving** all project-owned settings in `pak.config.json`, `docs/domains/*.md`, and `.agents/skills/pak-impact/references/dependency-matrix.md`.
 
 ---
 

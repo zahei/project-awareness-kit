@@ -175,7 +175,7 @@ for rule in checks.get("banned_patterns", []):
             if compiled.search(p.read_text(encoding="utf-8", errors="replace")):
                 errors.append(f"{msg} (in '{f}')")
 
-# 7. Optional Multi-Locale i18n Key Parity
+# 7. Optional Multi-Locale i18n Key Parity (+ Empty String & Undefined Code Reference Check)
 locales_dir_str = checks.get("i18n_locales_dir", "")
 if locales_dir_str:
     locales_dir = Path(locales_dir_str)
@@ -191,14 +191,38 @@ if locales_dir_str:
             kset = set(data.keys())
             missing = sorted(base_keys - kset)
             extra = sorted(kset - base_keys)
+            empty = [k for k in base_keys & kset if not str(data[k]).strip()]
             if missing:
                 i18n_issues.append(f"{lp.name} missing {len(missing)} keys (e.g. {missing[:3]})")
             if extra:
                 i18n_issues.append(f"{lp.name} has {len(extra)} extra keys")
+            if empty:
+                i18n_issues.append(f"{lp.name} has {len(empty)} empty values")
             if len(i18n_issues) >= 4:
                 break
+
+        if checks.get("i18n_check_code_refs", True):
+            gen_prefixes = [p.strip("/") for p in cfg.get("generated_paths", []) if p.strip("/")]
+            key_re = re.compile(r"""\b(?:t|tr)\(\s*["']([a-zA-Z0-9_.]+)["']""")
+            used_missing = set()
+            scan_roots = [Path("web/src"), Path("src")]
+            for sroot in scan_roots:
+                if not sroot.exists():
+                    continue
+                for src in sroot.rglob("*"):
+                    if src.suffix not in (".ts", ".tsx") or "tests" in src.parts or "__tests__" in src.parts:
+                        continue
+                    rel_src = src.as_posix()
+                    if any(rel_src == gp or rel_src.startswith(gp + "/") for gp in gen_prefixes):
+                        continue
+                    for m in key_re.finditer(src.read_text(encoding="utf-8", errors="replace")):
+                        if m.group(1) not in base_keys:
+                            used_missing.add(f"{rel_src}:{m.group(1)}")
+            if used_missing:
+                i18n_issues.insert(0, f"Undefined i18n keys in TS/TSX: {sorted(used_missing)[:4]}")
+
         if i18n_issues:
-            errors.append("i18n parity check failed: " + "; ".join(i18n_issues))
+            errors.append("i18n parity check failed: " + "; ".join(i18n_issues[:4]))
 
 # 8. Wire-Breaking Contract & Destructive Migration Diff Guard (`detect_breaking_contracts`)
 if checks.get("detect_breaking_contracts", True) and not allow_breaking:
@@ -248,8 +272,12 @@ if checks.get("detect_breaking_contracts", True) and not allow_breaking:
         if re.search(r"migrations/.*\.sql$", f) and Path(f).exists():
             sql_txt = Path(f).read_text(encoding="utf-8", errors="replace")
             if "pak:allow-destructive" not in sql_txt:
-                up_part = sql_txt.split("-- +goose Down")[0]
-                if re.search(r"\b(DROP\s+COLUMN|ALTER\s+COLUMN\s+\S+\s+TYPE)\b", up_part, re.IGNORECASE):
+                if f in added_files:
+                    candidate_sql = sql_txt.split("-- +goose Down")[0]
+                else:
+                    diff = subprocess.run(["git", "diff", "-U0", "HEAD", "--", f], capture_output=True, text=True, check=False).stdout
+                    candidate_sql = "\n".join(ln[1:] for ln in diff.splitlines() if ln.startswith("+") and not ln.startswith("+++"))
+                if re.search(r"\b(DROP\s+COLUMN|ALTER\s+COLUMN\s+\S+\s+TYPE)\b", candidate_sql, re.IGNORECASE):
                     errors.append(
                         f"Destructive SQL migration detected in '{f}' (DROP COLUMN / ALTER COLUMN TYPE). Add '-- pak:allow-destructive' or set PAK_ALLOW_BREAKING=1 if verified safe."
                     )

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-pak v2.0 — Project Awareness Kit CLI & Multi-Agent / Multi-Microservice Installer
+pak v2.1 — Project Awareness Kit CLI, Upgrader & Multi-Agent / Multi-Microservice Installer
 Compatible with Google (Antigravity `agy` / Gemini CLI), Anthropic (`claude` Claude Code),
 and OpenAI (`codex` Codex CLI) + Cursor/Windsurf (`AGENTS.md`).
 """
@@ -11,12 +11,14 @@ import argparse
 import json
 import os
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
+PAK_VERSION = "2.1.0"
 PAK_ROOT = Path(__file__).resolve().parent
 TEMPLATES_DIR = PAK_ROOT / "templates"
 
@@ -24,6 +26,9 @@ PAK_MD_START = "<!-- PAK:START -->"
 PAK_MD_END = "<!-- PAK:END -->"
 PAK_SH_START = "# --- PAK:START ---"
 PAK_SH_END = "# --- PAK:END ---"
+
+SKILL_NAMES = ("pak-atlas", "pak-impact", "pak-domains", "pak-bootstrap")
+ENGINE_SCRIPTS = ("build_atlas.py", "blast_radius.sh", "verify_impact.sh", "affected_tests.py")
 
 CYAN = "\033[0;36m"
 GREEN = "\033[0;32m"
@@ -120,17 +125,31 @@ def make_executable(p: Path) -> None:
     p.chmod(p.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def copy_skill_tree(src_skill: Path, dst_skill: Path, include_openai_yaml: bool) -> None:
+def sync_skill_tree(src_skill: Path, dst_skill: Path, include_openai_yaml: bool) -> None:
+    """Updates skill templates (`SKILL.md`, `agents/openai.yaml`) while strictly preserving project-curated `references/`."""
+    preserved_refs: Dict[str, bytes] = {}
+    refs_dir = dst_skill / "references"
+    if not dst_skill.is_symlink() and refs_dir.is_dir():
+        for ref_file in refs_dir.rglob("*"):
+            if ref_file.is_file():
+                preserved_refs[ref_file.relative_to(refs_dir).as_posix()] = ref_file.read_bytes()
+
     if dst_skill.is_symlink() or dst_skill.exists():
         if dst_skill.is_symlink() or dst_skill.is_file():
             dst_skill.unlink()
         else:
             shutil.rmtree(dst_skill)
+
     shutil.copytree(src_skill, dst_skill)
     if not include_openai_yaml:
         openai_dir = dst_skill / "agents"
         if openai_dir.exists():
             shutil.rmtree(openai_dir)
+
+    for rel_ref, content in preserved_refs.items():
+        restored = dst_skill / "references" / rel_ref
+        restored.parent.mkdir(parents=True, exist_ok=True)
+        restored.write_bytes(content)
 
 
 def configure_agy_hooks(target: Path) -> None:
@@ -214,6 +233,112 @@ def configure_git_pre_commit(target: Path) -> bool:
     return True
 
 
+def infer_existing_hooks_mode(target: Path, cfg: Dict[str, Any]) -> str:
+    saved = cfg.get("hooks_mode", "")
+    if saved in ("both", "ai", "git", "none"):
+        return saved
+    has_ai = (target / ".agents" / "hooks.json").exists() or (target / ".claude" / "settings.json").exists()
+    git_hook = target / ".git" / "hooks" / "pre-commit"
+    has_git = git_hook.exists() and PAK_SH_START in git_hook.read_text(encoding="utf-8", errors="replace")
+    if has_ai and has_git:
+        return "both"
+    if has_ai:
+        return "ai"
+    if has_git:
+        return "git"
+    return "both"
+
+
+def apply_engine_skills_rules_and_hooks(
+    target: Path,
+    agents: Set[str],
+    hooks_mode: str,
+) -> bool:
+    """Installs or upgrades stateless `pak` engine scripts, skills, fenced rule blocks, hooks, and SQLite Atlas."""
+    # A. Engine scripts (`scripts/pak/*`)
+    dst_scripts = target / "scripts" / "pak"
+    dst_scripts.mkdir(parents=True, exist_ok=True)
+    for script_name in ENGINE_SCRIPTS:
+        src = TEMPLATES_DIR / "scripts" / "pak" / script_name
+        dst = dst_scripts / script_name
+        shutil.copy2(src, dst)
+        make_executable(dst)
+
+    # B. Skills (`.agents/skills/pak-*` & `.claude/skills/pak-*`, preserving project `references/`)
+    needs_agents_skills = bool(agents & {"google", "openai"})
+    include_openai_meta = "openai" in agents
+
+    if needs_agents_skills:
+        agents_skills_root = target / ".agents" / "skills"
+        agents_skills_root.mkdir(parents=True, exist_ok=True)
+        for sname in SKILL_NAMES:
+            sync_skill_tree(TEMPLATES_DIR / "skills" / sname, agents_skills_root / sname, include_openai_meta)
+
+    if "anthropic" in agents:
+        claude_skills_root = target / ".claude" / "skills"
+        claude_skills_root.mkdir(parents=True, exist_ok=True)
+        for sname in SKILL_NAMES:
+            dst_c = claude_skills_root / sname
+            if needs_agents_skills:
+                if dst_c.is_symlink() or dst_c.exists():
+                    if dst_c.is_symlink() or dst_c.is_file():
+                        dst_c.unlink()
+                    else:
+                        shutil.rmtree(dst_c)
+                try:
+                    os.symlink(Path("../../.agents/skills") / sname, dst_c)
+                except OSError:
+                    sync_skill_tree(TEMPLATES_DIR / "skills" / sname, dst_c, False)
+            else:
+                sync_skill_tree(TEMPLATES_DIR / "skills" / sname, dst_c, False)
+
+    # C. Lean Always-On Rules (`<!-- PAK:START --> ... <!-- PAK:END -->`)
+    snippet = (TEMPLATES_DIR / "AGENTS.snippet.md").read_text(encoding="utf-8")
+    if not needs_agents_skills and "anthropic" in agents:
+        snippet = snippet.replace(".agents/skills/", ".claude/skills/")
+
+    if agents & {"google", "openai"}:
+        upsert_markdown_block(target / "AGENTS.md", snippet, f"# {target.name} — Agent Rules")
+    if "google" in agents:
+        gemini_pointer = (
+            f"{PAK_MD_START}\n"
+            "## Project Awareness Kit (`pak`)\n"
+            "Follow all reuse, blast-radius, microservice-contract, and domain-dossier rules in `AGENTS.md` (`docs/atlas/*` & `docs/domains/*`).\n"
+            f"{PAK_MD_END}"
+        )
+        upsert_markdown_block(target / "GEMINI.md", gemini_pointer)
+    if "anthropic" in agents:
+        claude_snippet = snippet if not (target / "AGENTS.md").exists() else (
+            f"{PAK_MD_START}\n"
+            "## Project Awareness Kit (`pak`)\n"
+            "Read and strictly follow `@AGENTS.md` for `pak-atlas`, `pak-impact`, and `pak-domains` workflows (`docs/atlas/*` & `docs/domains/*`).\n"
+            f"{PAK_MD_END}"
+        )
+        upsert_markdown_block(target / "CLAUDE.md", claude_snippet, f"# {target.name} — Claude Code Rules")
+
+    # D. Lifecycle Hooks
+    git_hook_installed = False
+    if hooks_mode in ("both", "ai"):
+        if "google" in agents:
+            configure_agy_hooks(target)
+        if "anthropic" in agents:
+            configure_claude_hooks(target)
+    if hooks_mode in ("both", "git"):
+        git_hook_installed = configure_git_pre_commit(target)
+
+    # E. Seed starter domain dossier if empty & refresh incremental SQLite Atlas
+    domains_dir = target / "docs" / "domains"
+    domains_dir.mkdir(parents=True, exist_ok=True)
+    if not list(domains_dir.glob("*.md")):
+        shutil.copy2(
+            TEMPLATES_DIR / "domains" / "00-core-architecture.md",
+            domains_dir / "00-core-architecture.md",
+        )
+
+    subprocess.run([sys.executable, str(dst_scripts / "build_atlas.py")], cwd=str(target), check=True)
+    return git_hook_installed
+
+
 def parse_agents_arg(raw: str) -> Set[str]:
     items = {x.strip().lower() for x in raw.split(",") if x.strip()}
     if "all" in items or not items:
@@ -230,7 +355,15 @@ def cmd_init(args: argparse.Namespace) -> int:
     target.mkdir(parents=True, exist_ok=True)
     detected = detect_repo_features(target)
 
-    print(f"{BOLD}{CYAN}==> pak v2.0 (Project Awareness Kit) Installer{RESET}")
+    cfg_path = target / "pak.config.json"
+    existing_cfg: Dict[str, Any] = {}
+    if cfg_path.exists():
+        try:
+            existing_cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing_cfg = {}
+
+    print(f"{BOLD}{CYAN}==> pak v{PAK_VERSION} (Project Awareness Kit) Installer{RESET}")
     print(f"    Target project : {target}")
     if detected["stacks"]:
         print(f"    Detected stack : {', '.join(detected['stacks'])}")
@@ -256,6 +389,8 @@ def cmd_init(args: argparse.Namespace) -> int:
             agents = parse_agents_arg(raw_custom or "all")
         else:
             agents = parse_agents_arg(choice)
+    elif existing_cfg.get("agents"):
+        agents = set(existing_cfg["agents"])
     else:
         agents = {"google", "anthropic", "openai"}
 
@@ -287,15 +422,25 @@ def cmd_init(args: argparse.Namespace) -> int:
             ],
             default_idx=1,
         )
+    elif existing_cfg:
+        hooks_mode = infer_existing_hooks_mode(target, existing_cfg)
     else:
         hooks_mode = "both"
 
-    enforce_uuid_v7 = bool(args.uuid_v7)
-    i18n_dir = args.i18n_dir if args.i18n_dir is not None else detected["i18n_dir"]
+    prev_checks = existing_cfg.get("checks", {})
+    enforce_uuid_v7 = True if args.uuid_v7 else bool(prev_checks.get("enforce_uuid_v7", False))
+    i18n_dir = (
+        args.i18n_dir
+        if args.i18n_dir is not None
+        else prev_checks.get("i18n_locales_dir", detected["i18n_dir"])
+    )
     linked_repos = [x.strip() for x in (args.link_repos or "").split(",") if x.strip()]
 
     if interactive and not args.uuid_v7:
-        enforce_uuid_v7 = ask_yes_no("4. Enforce time-ordered UUIDv7 (block UUIDv4 calls in new edits)?", default=False)
+        enforce_uuid_v7 = ask_yes_no(
+            "4. Enforce time-ordered UUIDv7 (block UUIDv4 calls in new edits)?",
+            default=enforce_uuid_v7,
+        )
     if interactive and args.i18n_dir is None and detected["i18n_dir"]:
         use_i18n = ask_yes_no(
             f"5. Enforce multi-locale key parity on detected '{detected['i18n_dir']}'?",
@@ -307,121 +452,111 @@ def cmd_init(args: argparse.Namespace) -> int:
             raw_lr = input(f"{CYAN}Enter comma-separated relative/absolute repo paths (e.g. ../auth-svc,../web-app): {RESET}").strip()
             linked_repos = [x.strip() for x in raw_lr.split(",") if x.strip()]
 
-    # A. Install scripts/pak/*
-    dst_scripts = target / "scripts" / "pak"
-    dst_scripts.mkdir(parents=True, exist_ok=True)
-    for script_name in ("build_atlas.py", "blast_radius.sh", "verify_impact.sh", "affected_tests.py"):
-        src = TEMPLATES_DIR / "scripts" / "pak" / script_name
-        dst = dst_scripts / script_name
-        shutil.copy2(src, dst)
-        make_executable(dst)
-
-    # B. Create or merge pak.config.json
-    cfg_path = target / "pak.config.json"
     default_cfg = json.loads((TEMPLATES_DIR / "pak.config.default.json").read_text(encoding="utf-8"))
-    if cfg_path.exists():
-        try:
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-        except Exception:
-            cfg = default_cfg
-    else:
-        cfg = default_cfg
+    cfg = existing_cfg if existing_cfg else default_cfg
+    if not existing_cfg:
         cfg["project_name"] = target.name
 
+    cfg["pak_version"] = PAK_VERSION
     cfg["agents"] = sorted(agents)
+    cfg["hooks_mode"] = hooks_mode
+    for k, v in default_cfg.items():
+        cfg.setdefault(k, v)
     if linked_repos:
-        existing_lr = cfg.get("linked_repos", [])
-        cfg["linked_repos"] = sorted(set(existing_lr + linked_repos))
+        cfg["linked_repos"] = sorted(set(cfg.get("linked_repos", []) + linked_repos))
     cfg.setdefault("checks", {})
+    for ck, cv in default_cfg["checks"].items():
+        cfg["checks"].setdefault(ck, cv)
     cfg["checks"]["enforce_uuid_v7"] = enforce_uuid_v7
     cfg["checks"]["i18n_locales_dir"] = i18n_dir
-    cfg["checks"].setdefault("detect_duplicate_symbols", True)
-    cfg["checks"].setdefault("detect_breaking_contracts", True)
     cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
 
-    # C. Install Skills
-    skill_names = ["pak-atlas", "pak-impact", "pak-domains", "pak-bootstrap"]
-    needs_agents_skills = bool(agents & {"google", "openai"})
-    include_openai_meta = "openai" in agents
+    git_hook_installed = apply_engine_skills_rules_and_hooks(target, agents, hooks_mode)
 
-    if needs_agents_skills:
-        agents_skills_root = target / ".agents" / "skills"
-        agents_skills_root.mkdir(parents=True, exist_ok=True)
-        for sname in skill_names:
-            copy_skill_tree(TEMPLATES_DIR / "skills" / sname, agents_skills_root / sname, include_openai_meta)
-
-    if "anthropic" in agents:
-        claude_skills_root = target / ".claude" / "skills"
-        claude_skills_root.mkdir(parents=True, exist_ok=True)
-        for sname in skill_names:
-            dst_c = claude_skills_root / sname
-            if needs_agents_skills:
-                if dst_c.is_symlink() or dst_c.exists():
-                    if dst_c.is_symlink() or dst_c.is_file():
-                        dst_c.unlink()
-                    else:
-                        shutil.rmtree(dst_c)
-                try:
-                    os.symlink(Path("../../.agents/skills") / sname, dst_c)
-                except OSError:
-                    copy_skill_tree(TEMPLATES_DIR / "skills" / sname, dst_c, False)
-            else:
-                copy_skill_tree(TEMPLATES_DIR / "skills" / sname, dst_c, False)
-
-    # D. Upsert Lean Always-On Rules
-    snippet = (TEMPLATES_DIR / "AGENTS.snippet.md").read_text(encoding="utf-8")
-    if not needs_agents_skills and "anthropic" in agents:
-        snippet = snippet.replace(".agents/skills/", ".claude/skills/")
-
-    if agents & {"google", "openai"}:
-        upsert_markdown_block(target / "AGENTS.md", snippet, f"# {target.name} — Agent Rules")
-    if "google" in agents:
-        gemini_pointer = (
-            f"{PAK_MD_START}\n"
-            "## Project Awareness Kit (`pak`)\n"
-            "Follow all reuse, blast-radius, microservice-contract, and domain-dossier rules in `AGENTS.md` (`docs/atlas/*` & `docs/domains/*`).\n"
-            f"{PAK_MD_END}"
-        )
-        upsert_markdown_block(target / "GEMINI.md", gemini_pointer)
-    if "anthropic" in agents:
-        claude_snippet = snippet if not (target / "AGENTS.md").exists() else (
-            f"{PAK_MD_START}\n"
-            "## Project Awareness Kit (`pak`)\n"
-            "Read and strictly follow `@AGENTS.md` for `pak-atlas`, `pak-impact`, and `pak-domains` workflows (`docs/atlas/*` & `docs/domains/*`).\n"
-            f"{PAK_MD_END}"
-        )
-        upsert_markdown_block(target / "CLAUDE.md", claude_snippet, f"# {target.name} — Claude Code Rules")
-
-    # E. Configure Hooks
-    git_hook_installed = False
-    if hooks_mode in ("both", "ai"):
-        if "google" in agents:
-            configure_agy_hooks(target)
-        if "anthropic" in agents:
-            configure_claude_hooks(target)
-    if hooks_mode in ("both", "git"):
-        git_hook_installed = configure_git_pre_commit(target)
-
-    # F. Seed docs/domains/ & build initial SQLite Atlas
-    domains_dir = target / "docs" / "domains"
-    domains_dir.mkdir(parents=True, exist_ok=True)
-    if not list(domains_dir.glob("*.md")):
-        shutil.copy2(
-            TEMPLATES_DIR / "domains" / "00-core-architecture.md",
-            domains_dir / "00-core-architecture.md",
-        )
-
-    subprocess.run([sys.executable, str(dst_scripts / "build_atlas.py")], cwd=str(target), check=True)
-
-    print(f"\n{GREEN}{BOLD}==> pak v2.0 installed successfully into {target}!{RESET}")
+    print(f"\n{GREEN}{BOLD}==> pak v{PAK_VERSION} installed successfully into {target}!{RESET}")
     print(f"    Configured ecosystems : {', '.join(sorted(agents))}")
     print(f"    Project stage         : {stage}")
-    print(f"    Verification gates    : {hooks_mode}" + (" (run `pak init` again after `git init` for pre-commit)" if hooks_mode in ("both", "git") and not git_hook_installed else ""))
+    print(f"    Verification gates    : {hooks_mode}" + (" (run `pak upgrade` after `git init` for pre-commit)" if hooks_mode in ("both", "git") and not git_hook_installed else ""))
     print(f"    SQLite FTS5 cache     : {target / '.pak/index.sqlite'} (auto-gitignored)")
     if stage == "existing":
         print(f"\n{YELLOW}{BOLD}Next Step (One-Time Brownfield Audit):{RESET}")
         print("  Open your AI CLI (`agy`, `claude`, or `codex`) in that project and send:")
         print(f'  {CYAN}"Activate the pak-bootstrap skill to audit this codebase, quarantine dead docs/paths, and write docs/domains/*.md dossiers."{RESET}')
+    return 0
+
+
+def cmd_upgrade(args: argparse.Namespace) -> int:
+    """Zero-prompt project upgrader: updates engine scripts, skill definitions, hooks & rule markers while preserving all project config & dossiers."""
+    default_cfg = json.loads((TEMPLATES_DIR / "pak.config.default.json").read_text(encoding="utf-8"))
+    targets = args.targets or ["."]
+    rc = 0
+
+    for raw_t in targets:
+        target = Path(raw_t).expanduser().resolve()
+        cfg_path = target / "pak.config.json"
+        if not cfg_path.exists():
+            print(f"[pak:upgrade] Skipping {target}: pak.config.json not found (run `pak init {target}` first).", file=sys.stderr)
+            rc = 1
+            continue
+
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        old_ver = cfg.get("pak_version", "1.x/2.0")
+        agents = set(cfg.get("agents") or ["google", "anthropic", "openai"])
+        hooks_mode = infer_existing_hooks_mode(target, cfg)
+
+        # Merge any newly introduced schema defaults without overwriting ANY project setting
+        ordered_cfg: Dict[str, Any] = {"pak_version": PAK_VERSION}
+        for k, v in cfg.items():
+            if k != "pak_version":
+                ordered_cfg[k] = v
+        ordered_cfg["agents"] = sorted(agents)
+        ordered_cfg["hooks_mode"] = hooks_mode
+        for k, v in default_cfg.items():
+            ordered_cfg.setdefault(k, v)
+        ordered_cfg.setdefault("checks", {})
+        for ck, cv in default_cfg["checks"].items():
+            ordered_cfg["checks"].setdefault(ck, cv)
+        cfg_path.write_text(json.dumps(ordered_cfg, indent=2) + "\n", encoding="utf-8")
+
+        apply_engine_skills_rules_and_hooks(target, agents, hooks_mode)
+        print(
+            f"{GREEN}[pak:upgrade] Upgraded {ordered_cfg.get('project_name', target.name)} ({old_ver} -> v{PAK_VERSION}){RESET}: "
+            f"synced scripts/pak/*, skills, rule blocks, hooks & SQLite Atlas "
+            f"(preserved pak.config.json, docs/domains/*.md & dependency-matrix.md)."
+        )
+
+    return rc
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    target = Path(args.target).expanduser().resolve()
+    cfg_path = target / "pak.config.json"
+    print(f"{BOLD}pak CLI version      :{RESET} v{PAK_VERSION} ({PAK_ROOT})")
+    if not cfg_path.exists():
+        print(f"{YELLOW}Project status       : NOT INSTALLED in {target} (run `pak init`){RESET}")
+        return 1
+
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    proj_ver = cfg.get("pak_version", "pre-2.1")
+    ver_note = f"{GREEN}(up to date){RESET}" if proj_ver == PAK_VERSION else f"{YELLOW}(upgrade available -> run `pak upgrade`){RESET}"
+    domains_cnt = len(list((target / "docs" / "domains").glob("*.md"))) if (target / "docs" / "domains").exists() else 0
+    indexed_cnt = 0
+    db_path = target / ".pak" / "index.sqlite"
+    if db_path.exists():
+        try:
+            conn = sqlite3.connect(str(db_path))
+            indexed_cnt = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+            conn.close()
+        except Exception:
+            pass
+
+    print(f"{BOLD}Target project       :{RESET} {cfg.get('project_name', target.name)} ({target})")
+    print(f"{BOLD}Project pak_version  :{RESET} v{proj_ver} {ver_note}")
+    print(f"{BOLD}AI ecosystems        :{RESET} {', '.join(cfg.get('agents', []))}")
+    print(f"{BOLD}Verification gates   :{RESET} {infer_existing_hooks_mode(target, cfg)}")
+    print(f"{BOLD}SQLite indexed files :{RESET} {indexed_cnt} ({db_path.name if db_path.exists() else 'not built'})")
+    print(f"{BOLD}Domain dossiers      :{RESET} {domains_cnt} in docs/domains/")
+    print(f"{BOLD}Linked microservices :{RESET} {len(cfg.get('linked_repos', []))} {cfg.get('linked_repos', [])}")
     return 0
 
 
@@ -452,7 +587,10 @@ def cmd_install_cli(_: argparse.Namespace) -> int:
     if link_path.is_symlink() or link_path.exists():
         link_path.unlink()
     os.symlink(pak_exec, link_path)
-    print(f"{GREEN}[pak] Installed global CLI symlink: {link_path} -> {pak_exec}{RESET}")
+    print(f"{GREEN}[pak] Installed global CLI symlink: {link_path} -> {pak_exec} (v{PAK_VERSION}){RESET}")
+    path_dirs = os.environ.get("PATH", "").split(os.pathsep)
+    if str(bin_dir) not in path_dirs:
+        print(f"{YELLOW}[pak] Add to your shell profile if needed: export PATH=\"$HOME/.local/bin:$PATH\"{RESET}")
     return 0
 
 
@@ -472,7 +610,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     target = Path(args.target).expanduser().resolve()
     for md in ("AGENTS.md", "GEMINI.md", "CLAUDE.md"):
         remove_markdown_block(target / md)
-    for sname in ("pak-atlas", "pak-impact", "pak-domains", "pak-bootstrap"):
+    for sname in SKILL_NAMES:
         for base in (target / ".agents" / "skills" / sname, target / ".claude" / "skills" / sname):
             if base.is_symlink() or base.is_file():
                 base.unlink()
@@ -488,11 +626,12 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="pak",
-        description="pak v2.0 (Project Awareness Kit) — Sub-second SQLite context, anti-duplication, microservice contract & blast-radius guardrails for AI coding agents.",
+        description=f"pak v{PAK_VERSION} (Project Awareness Kit) — Sub-second SQLite context, anti-duplication, microservice contract & blast-radius guardrails for AI coding agents.",
     )
+    p.add_argument("-v", "--version", action="version", version=f"pak {PAK_VERSION}")
     sub = p.add_subparsers(dest="command")
 
-    p_init = sub.add_parser("init", help="Install or update pak in a target project (interactive by default)")
+    p_init = sub.add_parser("init", help="Install pak in a target project (interactive by default)")
     p_init.add_argument("target", nargs="?", default=".", help="Target project directory")
     p_init.add_argument("-y", "--yes", action="store_true", help="Non-interactive mode")
     p_init.add_argument("--agents", default="", help="Agents: all | google,anthropic,openai")
@@ -501,6 +640,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--uuid-v7", action="store_true", help="Enable UUIDv7 invariant check")
     p_init.add_argument("--i18n-dir", default=None, help="Relative path to JSON locale catalogs")
     p_init.add_argument("--link-repos", default="", help="Comma-separated sibling microservice repo paths")
+
+    p_up = sub.add_parser("upgrade", help="Zero-prompt upgrade of engine, skills, hooks & rule blocks (preserves config & dossiers)")
+    p_up.add_argument("targets", nargs="*", help="One or more project directories to upgrade (default: .)")
+
+    p_st = sub.add_parser("status", help="Show pak version alignment, active hooks, SQLite index & domain dossier count")
+    p_st.add_argument("target", nargs="?", default=".")
 
     p_link = sub.add_parser("link", help="Link one or more sibling microservice repositories for federated contract checks")
     p_link.add_argument("siblings", nargs="+", help="Relative or absolute paths to sibling pak-enabled repos")
@@ -536,6 +681,10 @@ def main() -> int:
         return 0
     if args.command == "init":
         return cmd_init(args)
+    if args.command == "upgrade":
+        return cmd_upgrade(args)
+    if args.command == "status":
+        return cmd_status(args)
     if args.command == "link":
         return cmd_link(args)
     if args.command == "install-cli":

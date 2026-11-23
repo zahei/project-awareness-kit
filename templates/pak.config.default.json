@@ -1,6 +1,8 @@
 {
+  "pak_version": "2.1.0",
   "project_name": "my-project",
   "agents": ["google", "anthropic", "openai"],
+  "hooks_mode": "both",
   "linked_repos": [],
   "quarantined_paths": [],
   "generated_paths": [
@@ -43,6 +45,7 @@
     "cochange_min_confidence": 0.65,
     "i18n_locales_dir": "",
     "i18n_base_locale": "en.json",
+    "i18n_check_code_refs": true,
     "banned_patterns": []
   }
 }
