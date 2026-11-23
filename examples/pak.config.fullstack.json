@@ -1,6 +1,8 @@
 {
+  "pak_version": "2.2.0",
   "project_name": "acme-platform",
   "agents": ["google", "anthropic", "openai"],
+  "hooks_mode": "both",
   "linked_repos": [
     "../acme-auth-service",
     "../acme-notification-worker",
@@ -39,6 +41,7 @@
     "cochange_min_confidence": 0.65,
     "i18n_locales_dir": "web/src/locales",
     "i18n_base_locale": "en.json",
+    "i18n_check_code_refs": true,
     "banned_patterns": [
       {
         "regex": "\\b(bg|text|border)-(purple|violet|fuchsia)-[0-9]{2,3}\\b",

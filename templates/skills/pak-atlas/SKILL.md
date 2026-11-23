@@ -21,6 +21,8 @@ Never write duplicate utilities, queries, endpoints, or UI components. This repo
    - `docs/atlas/01_CODE_CAPABILITIES.md` — Exported functions, classes, interfaces, hooks, and components.
    - `docs/atlas/02_DATA_CONTRACTS.md` — SQL tables, migrations, typed queries, Protobuf/GraphQL/Prisma schemas.
    - `docs/atlas/03_UI_AND_ASSETS.md` — CSS design tokens, themes, and i18n locale summary.
+   - `docs/atlas/04_DEPENDENCY_GRAPH.md` — Module dependency & reverse-dependent graph (`<-`).
+   - `docs/atlas/05_COCHANGE_AND_CONTRACTS.md` — Event-bus pub/sub topics, microservice links & git co-changes.
 
 2. **Reuse Before Inventing:**
    - If an existing helper, validator, formatter, repository query, or component covers 70%+ of what you need, **extend or parameterize it** instead of creating a parallel implementation.

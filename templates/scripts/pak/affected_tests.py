@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-pak v2.0 — Graph-Driven "Affected-Only" Fast Test Selector (`scripts/pak/affected_tests.py`).
+pak — Graph-Driven "Affected-Only" Fast Test Selector (`scripts/pak/affected_tests.py`).
 Uses `.pak/index.sqlite` reverse-dependent edges + `git diff` to compute (and optionally run)
 ONLY the unit test packages/files impacted by your current changes — keeping verification
 in 1–3 seconds instead of running 30-minute full CI test suites.

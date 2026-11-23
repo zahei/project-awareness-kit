@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-pak v2.1 — Project Awareness Kit CLI, Upgrader & Multi-Agent / Multi-Microservice Installer
+pak — Project Awareness Kit CLI, Global Upgrader & Multi-Agent / Multi-Microservice Installer
 Compatible with Google (Antigravity `agy` / Gemini CLI), Anthropic (`claude` Claude Code),
 and OpenAI (`codex` Codex CLI) + Cursor/Windsurf (`AGENTS.md`).
 """

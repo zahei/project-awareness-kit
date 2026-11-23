@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-pak v2.0 — Incremental SQLite/FTS5 Codebase Atlas, Cross-Service Contract Manifest,
+pak — Incremental SQLite/FTS5 Codebase Atlas, Cross-Service Contract Manifest,
 Dependency Graph & Git Co-Change Miner.
 
 Features (100% Python 3 stdlib, 0 external dependencies, 0 LLM tokens):
@@ -965,11 +965,13 @@ def discover_domain_dossiers() -> List[Tuple[str, str, str]]:
 
 def build_system_map(cfg: Dict[str, Any]) -> str:
     proj = cfg.get("project_name", ROOT.name)
+    pver = cfg.get("pak_version", "")
+    ver_tag = f"`pak v{pver}`" if pver else "`pak`"
     quarantined = cfg.get("quarantined_paths", [])
     dossiers = discover_domain_dossiers()
 
     out = [
-        f"# {proj} — System Map & Self-Evolving Context Index (`pak v2.0`)",
+        f"# {proj} — System Map & Self-Evolving Context Index ({ver_tag})",
         "",
         "> Auto-generated incrementally via `.pak/index.sqlite` by `scripts/pak/build_atlas.py`.",
         "> Consult `docs/atlas/*` before creating new functions and `docs/domains/*` before editing business logic.",

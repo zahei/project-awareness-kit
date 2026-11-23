@@ -2,16 +2,18 @@
 set -euo pipefail
 
 # ==============================================================================
-# pak v2.0 — Comprehensive 8-Stage End-to-End Test Suite
+# pak — Comprehensive 10-Stage Hermetic End-to-End Test Suite
 # Verifies:
-#   1. Polyglot install + incremental SQLite FTS5 cache (<25ms 0-reparse on 2nd run)
-#   2. Multi-vendor files (Google AGY, Anthropic Claude, OpenAI Codex, Git pre-commit)
-#   3. FTS5 `pak trace` & clean `pak check`
+#   1. Polyglot microservice install (`billing-svc` + `web-portal`)
+#   2. Incremental SQLite FTS5 cache (<25ms 0-reparse warm run) & multi-vendor files
+#   3. Federated cross-microservice contract & event-bus trace
 #   4. Wire-breaking Protobuf tag guard + UUIDv4 + i18n parity + loop-safety
-#   5. Mechanical near-duplicate function detector (`RenderCurrency` vs `FormatCurrency`)
-#   6. Cross-repo microservice & event-bus federation (`billing-svc` <-> `web-portal`)
+#   5. Mechanical near-duplicate function detector (`RenderAccountCurrency` vs `FormatAccountCurrency`)
+#   6. Cross-repo consumer advisory on modified service endpoint
 #   7. Graph-driven `pak affected` minimal unit test selector
-#   8. Self-evolving new-domain routing & clean `pak uninstall`
+#   8. Self-evolving new-domain routing
+#   9. Global `pak status` & `pak upgrade` from an arbitrary non-project folder + clean uninstall/`--purge`
+#  10. Shell-aware `pak install-cli` & `pak uninstall-cli` (`zsh`/`bash`/`fish` PATH injection)
 # ==============================================================================
 
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,7 +25,7 @@ mkdir -p "$HOME"
 PROJ="$TMP_BASE/billing-svc"
 PORTAL="$TMP_BASE/web-portal"
 
-echo "==> [1/8] Creating simulated microservice pair (billing-svc + web-portal) & installing pak v2.0..."
+echo "==> [1/10] Creating simulated microservice pair (billing-svc + web-portal) & installing pak..."
 mkdir -p "$PROJ/internal/service" "$PROJ/proto" "$PROJ/web/src/locales" "$PORTAL/src/api"
 
 cat > "$PROJ/go.mod" << 'EOF'
@@ -97,7 +99,7 @@ EOF
 python3 "$KIT_DIR/pak" init "$PORTAL" --yes --agents openai --stage existing --hooks none
 python3 "$KIT_DIR/pak" init "$PROJ" --yes --agents all --stage existing --hooks both --uuid-v7 --i18n-dir "web/src/locales" --link-repos "../web-portal"
 
-echo "==> [2/8] Verifying incremental SQLite cache (0 files re-parsed on warm run) & multi-vendor files..."
+echo "==> [2/10] Verifying incremental SQLite cache (0 files re-parsed on warm run) & multi-vendor files..."
 WARM_OUT="$(python3 "$KIT_DIR/pak" atlas "$PROJ")"
 echo "$WARM_OUT" | grep -q "(0 re-parsed incrementally via SQLite)"
 test -f "$PROJ/.pak/index.sqlite"
@@ -112,15 +114,15 @@ test -x "$PROJ/.git/hooks/pre-commit"
 (
     cd "$PROJ"
     git add .
-    git -c user.name="Test" -c user.email="test@example.com" commit -q -m "chore: install pak v2.0"
+    git -c user.name="Test" -c user.email="test@example.com" commit -q -m "chore: install pak"
 )
 
-echo "==> [3/8] Verifying federated cross-microservice trace ('invoice.paid' & '/api/v1/invoices')..."
+echo "==> [3/10] Verifying federated cross-microservice trace ('invoice.paid' & '/api/v1/invoices')..."
 TRACE_OUT="$(python3 "$KIT_DIR/pak" trace "invoice.paid" "$PROJ")"
 echo "$TRACE_OUT" | grep -q "FEDERATED SIBLING MICROSERVICE IMPACTS"
 echo "$TRACE_OUT" | grep -q "web-portal CONSUMES EVENT"
 
-echo "==> [4/8] Verifying wire-breaking Protobuf field-tag removal guard + UUIDv4 + i18n parity..."
+echo "==> [4/10] Verifying wire-breaking Protobuf field-tag removal guard + UUIDv4 + i18n parity..."
 echo '{"app.title": "Salut"}' > "$PROJ/web/src/locales/ro.json"
 # Remove field tag = 2 without `reserved 2;` -> wire-breaking!
 cat > "$PROJ/proto/billing.proto" << 'EOF'
@@ -146,7 +148,7 @@ echo "$AGY_BLOCK" | grep -q "UUIDv4 call detected"
 AGY_LOOP="$(echo '{"terminationReason":"NO_TOOL_CALL","continuationActive":true}' | bash "$PROJ/scripts/pak/verify_impact.sh" --agy-hook)"
 [ "$AGY_LOOP" = '{"decision": "allow"}' ]
 
-echo "==> [5/8] Verifying mechanical near-duplicate function detector (RenderAccountCurrency vs FormatAccountCurrency)..."
+echo "==> [5/10] Verifying mechanical near-duplicate function detector (RenderAccountCurrency vs FormatAccountCurrency)..."
 (cd "$PROJ" && git checkout -- .)
 mkdir -p "$PROJ/internal/util"
 cat > "$PROJ/internal/util/money.go" << 'EOF'
@@ -163,17 +165,17 @@ echo "$DUP_BLOCK" | grep -q "FormatAccountCurrency"
 rm -rf "$PROJ/internal/util"
 (cd "$PROJ" && git checkout -- .)
 
-echo "==> [6/8] Verifying cross-repo consumer advisory on modified service endpoint..."
+echo "==> [6/10] Verifying cross-repo consumer advisory on modified service endpoint..."
 echo "// touch endpoint file" >> "$PROJ/internal/service/billing.go"
 CLI_CHECK="$(python3 "$KIT_DIR/pak" check "$PROJ")"
 echo "$CLI_CHECK" | grep -q "Cross-microservice consumers affected: web-portal consumes"
 
-echo "==> [7/8] Verifying 'pak affected --run' fast targeted test execution..."
+echo "==> [7/10] Verifying 'pak affected --run' fast targeted test execution..."
 AFF_OUT="$(python3 "$KIT_DIR/pak" affected --run "$PROJ")"
 echo "$AFF_OUT" | grep -q "go test ./internal/service"
 (cd "$PROJ" && git checkout -- .)
 
-echo "==> [8/9] Verifying self-evolving new-domain routing..."
+echo "==> [8/10] Verifying self-evolving new-domain routing..."
 mkdir -p "$PROJ/internal/payments"
 cat > "$PROJ/internal/payments/stripe.go" << 'EOF'
 package payments
@@ -246,4 +248,5 @@ HOME="$FAKE_HOME" SHELL="/bin/zsh" PATH="/usr/bin:/bin" python3 "$KIT_DIR/pak" u
 [ ! -e "$FAKE_HOME/.local/bin/pak" ]
 [ ! -f "$FAKE_HOME/.zshrc" ]
 
-echo "==> ALL 10/10 PAK v2.1.2 SMOKE TESTS PASSED!"
+PAK_VER="$(python3 "$KIT_DIR/pak" --version)"
+echo "==> ALL 10/10 SMOKE TESTS PASSED ($PAK_VER)!"

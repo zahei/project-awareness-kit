@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ==============================================================================
-# pak v2.0 — Multi-Vendor Deterministic Impact, Contract, Duplicate & Evolution Gate
+# pak — Multi-Vendor Deterministic Impact, Contract, Duplicate & Evolution Gate
 #
 # Modes:
 #   1. CLI / Git Hook:   `bash scripts/pak/verify_impact.sh`
@@ -71,7 +71,7 @@ def allow_and_exit() -> None:
 
 def block_and_exit(errors: list[str]) -> None:
     joined = " | ".join(errors)
-    msg = f"[pak v2.0 gate] Fix before finishing: {joined}"
+    msg = f"[pak gate] Fix before finishing: {joined}"
     if mode == "agy":
         print(json.dumps({"decision": "continue", "reason": msg}))
         sys.exit(0)

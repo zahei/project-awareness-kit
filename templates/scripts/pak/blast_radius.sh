@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ==============================================================================
-# pak v2.0 — SQLite FTS5, Reverse-Dependent, Federated Microservice & Domain Tracer
+# pak — SQLite FTS5, Reverse-Dependent, Federated Microservice & Domain Tracer
 # Usage: bash scripts/pak/blast_radius.sh "<symbol|table|rpc|topic|component>"
 # ==============================================================================
 

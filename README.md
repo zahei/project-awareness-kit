@@ -1,4 +1,4 @@
-# `pak` — Project Awareness Kit (`v2.0`)
+# `pak` — Project Awareness Kit (`v2.2.0`)
 
 **Sub-second architectural memory, anti-duplication indexing, cross-microservice contract safety, and blast-radius verification for AI coding agents—with zero background daemons, zero external dependencies, and 30–50% lower LLM token usage.**
 
@@ -26,9 +26,10 @@
    - [Layer 7: Graph-Driven Affected-Only Test Runner (`pak affected`)](#layer-7-graph-driven-affected-only-test-runner-pak-affected)
 4. [Installation & Quickstart](#4-installation--quickstart)
 5. [Onboarding Workflows: Greenfield vs. Existing Complex Codebases](#5-onboarding-workflows-greenfield-vs-existing-complex-codebases)
-6. [Complete CLI Reference](#6-complete-cli-reference)
+6. [Complete CLI Reference & Upgrading](#6-complete-cli-reference--upgrading)
 7. [Configuration Reference (`pak.config.json` & Environment Flags)](#7-configuration-reference-pakconfigjson--environment-flags)
-8. [Testing & Uninstalling](#8-testing--uninstalling)
+8. [Uninstalling `pak` (Project-Level & System-Wide)](#8-uninstalling-pak-project-level--system-wide)
+9. [End-to-End Automated Test Suite](#9-end-to-end-automated-test-suite)
 
 ---
 
@@ -157,11 +158,11 @@ cd /path/to/your-project
 pak init
 ```
 
-### Option B: Direct / Non-Interactive CI Install
+### Option B: Direct / Non-Interactive Project & CI Install
 
 ```bash
 # Interactive wizard (prompts for AI ecosystems, greenfield vs existing, hooks, UUIDv7, i18n & linked repos):
-bash /path/to/project-awareness-kit/install.sh /path/to/your-project
+pak init /path/to/your-project
 
 # Non-interactive install configuring Google + Anthropic + OpenAI + sibling microservice links:
 pak init /path/to/your-project --yes --agents all --stage existing --hooks both --link-repos "../auth-svc,../web-app"
@@ -217,8 +218,10 @@ See [`examples/pak.config.fullstack.json`](./examples/pak.config.fullstack.json)
 
 | Key | Description |
 | :--- | :--- |
+| `pak_version` | Installed `pak` template/engine version stamped in the repository (used by `pak status` & `pak upgrade`). |
 | `project_name` | Logical service/project identifier exported in `docs/atlas/contracts.json`. |
 | `agents` | Configured AI ecosystems (`["google", "anthropic", "openai"]`). |
+| `hooks_mode` | Active automated gate mode (`"both"`, `"ai"`, `"git"`, or `"none"`). |
 | `linked_repos` | Relative or absolute paths to sibling microservice repositories for cross-service impact checks. |
 | `quarantined_paths` | Dead prototype folders or obsolete SQL dumps excluded from indexing and blocked from edits. |
 | `generated_paths` | Build/codegen directories skipped during symbol indexing (`dist`, `gen`, `sqlc`, `node_modules`). |
@@ -228,7 +231,8 @@ See [`examples/pak.config.fullstack.json`](./examples/pak.config.fullstack.json)
 | `checks.detect_breaking_contracts` | Blocks wire-breaking `.proto` tag/RPC deletions and unacknowledged `DROP COLUMN` migrations. |
 | `checks.cochange_min_commits` | Minimum shared commits in `git log` (default `3`) to record a hidden temporal coupling. |
 | `checks.cochange_min_confidence` | Minimum conditional probability $P(B \mid A)$ (default `0.65`) for git co-change pairs. |
-| `checks.i18n_locales_dir` | Directory of `<locale>.json` files verified for 100% key parity against `i18n_base_locale`. |
+| `checks.i18n_locales_dir` | Directory of `<locale>.json` files verified for 100% key parity & non-empty values against `i18n_base_locale`. |
+| `checks.i18n_check_code_refs` | Scans TS/TSX source files for undefined `t('...')` / `tr('...')` translation keys (default `true`). |
 | `checks.banned_patterns` | Custom `{ "regex", "path_regex", "message" }` architectural or UI design-token invariants. |
 
 ### Escape-Hatch & CI Environment Variables
@@ -272,7 +276,7 @@ rm -rf ~/.local/share/project-awareness-kit ~/projects/project-awareness-kit  # 
 
 ## 9. End-to-End Automated Test Suite
 
-Run the 9-stage smoke test suite (verifies incremental SQLite caching, multi-vendor hooks, microservice federation, wire-breaking Protobuf guards, duplicate-symbol detection, `pak affected`, `pak upgrade` preservation, and clean `pak uninstall` / `--purge`):
+Run the hermetic 10-stage smoke test suite (verifies incremental SQLite caching, multi-vendor hooks, microservice federation, wire-breaking Protobuf guards, duplicate-symbol detection, `pak affected`, global `pak upgrade` from arbitrary folders, shell-aware `zsh`/`bash`/`fish` `PATH` injection, and clean `pak uninstall` / `--purge`):
 
 ```bash
 bash tests/smoke_test.sh
