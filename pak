@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
-PAK_VERSION = "2.1.0"
+PAK_VERSION = "2.1.1"
 PAK_ROOT = Path(__file__).resolve().parent
 TEMPLATES_DIR = PAK_ROOT / "templates"
 
@@ -606,6 +606,77 @@ def cmd_passthrough(script_rel: str, target_dir: str, extra_args: List[str] | No
     return subprocess.run(cmd, cwd=str(target), check=False).returncode
 
 
+def remove_agy_hooks(target: Path) -> None:
+    hooks_path = target / ".agents" / "hooks.json"
+    if not hooks_path.exists():
+        return
+    try:
+        data = json.loads(hooks_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if "pak-impact-gate" in data:
+        del data["pak-impact-gate"]
+        if data:
+            hooks_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        else:
+            hooks_path.unlink()
+
+
+def remove_claude_hooks(target: Path) -> None:
+    settings_path = target / ".claude" / "settings.json"
+    if not settings_path.exists():
+        return
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    hooks_obj = data.get("hooks")
+    if isinstance(hooks_obj, dict) and isinstance(hooks_obj.get("Stop"), list):
+        hooks_obj["Stop"] = [
+            entry for entry in hooks_obj["Stop"]
+            if "scripts/pak/verify_impact.sh" not in json.dumps(entry)
+        ]
+        if not hooks_obj["Stop"]:
+            del hooks_obj["Stop"]
+        if not hooks_obj:
+            del data["hooks"]
+    if data:
+        settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    else:
+        settings_path.unlink()
+
+
+def remove_git_pre_commit(target: Path) -> None:
+    hook_file = target / ".git" / "hooks" / "pre-commit"
+    if not hook_file.exists():
+        return
+    txt = hook_file.read_text(encoding="utf-8", errors="replace")
+    if PAK_SH_START not in txt or PAK_SH_END not in txt:
+        return
+    before = txt.split(PAK_SH_START)[0].rstrip()
+    after = txt.split(PAK_SH_END, 1)[1].lstrip()
+    merged = "\n\n".join(p for p in (before, after) if p).strip()
+    meaningful = [
+        ln.strip()
+        for ln in merged.splitlines()
+        if ln.strip() and ln.strip() not in ("#!/usr/bin/env bash", "#!/bin/sh", "set -e", "set -euo pipefail")
+    ]
+    if meaningful:
+        hook_file.write_text(merged + "\n", encoding="utf-8")
+    else:
+        hook_file.unlink()
+
+
+def prune_empty_dirs(candidates: List[Path]) -> None:
+    for d in candidates:
+        if d.exists() and d.is_dir() and not d.is_symlink():
+            try:
+                if not any(d.iterdir()):
+                    d.rmdir()
+            except OSError:
+                pass
+
+
 def cmd_uninstall(args: argparse.Namespace) -> int:
     target = Path(args.target).expanduser().resolve()
     for md in ("AGENTS.md", "GEMINI.md", "CLAUDE.md"):
@@ -616,10 +687,46 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
                 base.unlink()
             elif base.is_dir():
                 shutil.rmtree(base)
-    for d in (target / "scripts" / "pak", target / ".pak"):
+
+    remove_agy_hooks(target)
+    remove_claude_hooks(target)
+    remove_git_pre_commit(target)
+
+    dirs_to_delete = [target / "scripts" / "pak", target / ".pak", target / "docs" / "atlas"]
+    if args.purge:
+        dirs_to_delete.append(target / "docs" / "domains")
+        cfg_file = target / "pak.config.json"
+        if cfg_file.exists():
+            cfg_file.unlink()
+
+    for d in dirs_to_delete:
         if d.is_dir():
             shutil.rmtree(d)
-    print(f"{GREEN}[pak] Removed pak rules, skills, cache, and scripts from {target} (preserved docs/domains/ and pak.config.json).{RESET}")
+
+    prune_empty_dirs([
+        target / ".agents" / "skills",
+        target / ".agents",
+        target / ".claude" / "skills",
+        target / ".claude",
+        target / "scripts",
+        target / "docs",
+    ])
+
+    if args.purge:
+        print(f"{GREEN}[pak] Purged all pak files, hooks, skills, cache, docs/atlas/, docs/domains/, and pak.config.json from {target}.{RESET}")
+    else:
+        print(f"{GREEN}[pak] Removed pak rules, hooks, skills, SQLite cache, scripts/pak/, and docs/atlas/ from {target} (preserved docs/domains/ and pak.config.json; pass --purge to remove those too).{RESET}")
+    return 0
+
+
+def cmd_uninstall_cli(_: argparse.Namespace) -> int:
+    link_path = Path.home() / ".local" / "bin" / "pak"
+    if link_path.is_symlink() or link_path.exists():
+        link_path.unlink()
+        print(f"{GREEN}[pak] Removed global CLI symlink: {link_path}{RESET}")
+    else:
+        print(f"{YELLOW}[pak] Global CLI symlink not found at {link_path} (already removed).{RESET}")
+    print(f"To remove the pak repository itself, run: rm -rf {PAK_ROOT}")
     return 0
 
 
@@ -652,6 +759,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_link.add_argument("--target", default=".", help="Target project directory (default: .)")
 
     sub.add_parser("install-cli", help="Symlink `pak` into ~/.local/bin/pak")
+    sub.add_parser("uninstall-cli", help="Remove the global ~/.local/bin/pak symlink")
 
     p_atlas = sub.add_parser("atlas", help="Incrementally update SQLite index & docs/atlas/* (<50ms)")
     p_atlas.add_argument("target", nargs="?", default=".")
@@ -667,7 +775,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_check = sub.add_parser("check", help="Run deterministic contract, duplicate, dependency, codegen & evolution checks")
     p_check.add_argument("target", nargs="?", default=".")
 
-    p_un = sub.add_parser("uninstall", help="Cleanly remove pak hooks, skills, cache, and rule blocks")
+    p_un = sub.add_parser("uninstall", help="Cleanly remove pak hooks, skills, cache, atlas & rule blocks (--purge for full wipe)")
+    p_un.add_argument("--purge", action="store_true", help="Also delete pak.config.json and docs/domains/")
     p_un.add_argument("target", nargs="?", default=".")
 
     return p
@@ -689,6 +798,8 @@ def main() -> int:
         return cmd_link(args)
     if args.command == "install-cli":
         return cmd_install_cli(args)
+    if args.command == "uninstall-cli":
+        return cmd_uninstall_cli(args)
     if args.command == "atlas":
         return cmd_passthrough("build_atlas.py", args.target)
     if args.command == "trace":

@@ -212,5 +212,19 @@ grep -q "INDEXED SYMBOLS, CONTRACTS & REVERSE DEPENDENTS" "$PROJ/scripts/pak/bla
 python3 "$KIT_DIR/pak" uninstall "$PROJ"
 grep -q "Keep existing custom rule." "$PROJ/AGENTS.md"
 ! grep -q "PAK:START" "$PROJ/AGENTS.md"
+[ ! -d "$PROJ/scripts/pak" ]
+[ ! -d "$PROJ/.pak" ]
+[ ! -d "$PROJ/docs/atlas" ]
+[ ! -f "$PROJ/.agents/hooks.json" ]
+[ ! -f "$PROJ/.claude/settings.json" ]
+[ ! -f "$PROJ/.git/hooks/pre-commit" ]
+# Safe mode preserves docs/domains/ and pak.config.json
+[ -f "$PROJ/docs/domains/payments.md" ]
+[ -f "$PROJ/pak.config.json" ]
+
+# Full --purge mode removes docs/domains/ and pak.config.json too
+python3 "$KIT_DIR/pak" uninstall --purge "$PROJ"
+[ ! -d "$PROJ/docs/domains" ]
+[ ! -f "$PROJ/pak.config.json" ]
 
 echo "==> ALL 9/9 PAK v2.1 SMOKE TESTS PASSED!"

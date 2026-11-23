@@ -191,7 +191,8 @@ pak atlas [dir]                  # Incrementally update .pak/index.sqlite & docs
 pak trace <query> [dir]          # Search FTS5 symbols, reverse dependents, co-changes & sibling repos
 pak affected [--run] [dir]       # Print (or execute) ONLY unit tests impacted by current git diff
 pak check [dir]                  # Run all contract, duplicate, dependency, codegen, i18n & evolution gates
-pak uninstall [dir]              # Cleanly remove pak blocks, skills, SQLite cache, and scripts
+pak uninstall [--purge] [dir]    # Cleanly remove pak hooks, skills, cache, atlas & rule blocks
+pak uninstall-cli                # Remove the global ~/.local/bin/pak symlink
 ```
 
 ### Upgrading `pak` Over Time (System-Wide & Project-Level)
@@ -234,9 +235,39 @@ When an intentional breaking change, distinct similarly-named function, or pure 
 
 ---
 
-## 8. Testing & Uninstalling
+## 8. Uninstalling `pak` (Project-Level & System-Wide)
 
-Run the 8-stage automated end-to-end test suite (tests incremental SQLite caching, multi-vendor hooks, microservice federation, wire-breaking Protobuf guards, duplicate-symbol detection, `pak affected`, and clean uninstall):
+`pak` never locks a repository in. Every rule injection and hook registration is fenced inside explicit markers so uninstallation is 100% surgical and leaves zero broken hooks or orphaned files.
+
+### 1. Project-Level Uninstall (Safe Mode — Preserves Architectural Docs)
+Run inside (or pass the path to) any `pak`-enabled project:
+```bash
+pak uninstall /path/to/your-project
+```
+What **`pak uninstall`** removes:
+- **Rule blocks:** Strips only `<!-- PAK:START --> ... <!-- PAK:END -->` from `AGENTS.md`, `GEMINI.md`, and `CLAUDE.md` (preserving all of your own rules; deletes the file only if nothing else remains).
+- **AI & Git lifecycle hooks:** Removes `"pak-impact-gate"` from `.agents/hooks.json`, removes the `pak` `Stop` hook entry from `.claude/settings.json`, and strips `# --- PAK:START --- ... # --- PAK:END ---` from `.git/hooks/pre-commit` (preserving any other project hooks).
+- **Skills, scripts, cache & auto-generated Atlas:** Deletes `.agents/skills/pak-*`, `.claude/skills/pak-*`, `scripts/pak/`, `.pak/index.sqlite`, and `docs/atlas/` (leaving any non-`pak` skills untouched and pruning empty directories).
+- **What is preserved by default:** Your human/AI-curated `docs/domains/*.md` dossiers and `pak.config.json` are kept safe.
+
+### 2. Full Zero-Trace Project Wipe (`--purge`)
+To also delete `pak.config.json` and `docs/domains/*.md` so zero trace of `pak` remains in the repository:
+```bash
+pak uninstall --purge /path/to/your-project
+```
+
+### 3. System-Wide CLI Uninstall (`pak uninstall-cli`)
+To remove `pak` from your machine completely:
+```bash
+pak uninstall-cli                        # Removes ~/.local/bin/pak symlink
+rm -rf ~/projects/project-awareness-kit  # Optional: delete cloned source repository
+```
+
+---
+
+## 9. End-to-End Automated Test Suite
+
+Run the 9-stage smoke test suite (verifies incremental SQLite caching, multi-vendor hooks, microservice federation, wire-breaking Protobuf guards, duplicate-symbol detection, `pak affected`, `pak upgrade` preservation, and clean `pak uninstall` / `--purge`):
 
 ```bash
 bash tests/smoke_test.sh
