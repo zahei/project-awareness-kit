@@ -17,6 +17,8 @@ set -euo pipefail
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_BASE="$(mktemp -d)"
 trap 'rm -rf "$TMP_BASE"' EXIT
+export HOME="$TMP_BASE/home"
+mkdir -p "$HOME"
 
 PROJ="$TMP_BASE/billing-svc"
 PORTAL="$TMP_BASE/web-portal"
@@ -190,7 +192,7 @@ EVO_PASS="$(echo '{"terminationReason":"NO_TOOL_CALL","continuationActive":false
 [ "$EVO_PASS" = '{"decision": "allow"}' ]
 python3 "$KIT_DIR/pak" trace "ChargeCustomerCard" "$PROJ" | grep -q "docs/domains/payments.md"
 
-echo "==> [9/9] Verifying 'pak status', 'pak upgrade' preservation guarantees & clean uninstall..."
+echo "==> [9/10] Verifying global 'pak status' & 'pak upgrade' from an arbitrary non-project folder + clean uninstall..."
 echo "# Custom Matrix Row: Billing <-> Ledger" >> "$PROJ/.agents/skills/pak-impact/references/dependency-matrix.md"
 python3 -c '
 import json, pathlib
@@ -200,9 +202,14 @@ d["pak_version"] = "1.0.0"
 p.write_text(json.dumps(d, indent=2))
 '
 echo "# outdated script" > "$PROJ/scripts/pak/blast_radius.sh"
-python3 "$KIT_DIR/pak" status "$PROJ" | grep -q "upgrade available"
 
-python3 "$KIT_DIR/pak" upgrade "$PROJ"
+# Run 'pak status' and 'pak upgrade' from /tmp (an arbitrary folder with NO pak.config.json!)
+ARB_DIR="$(dirname "$PROJ")/arbitrary_empty_folder"
+mkdir -p "$ARB_DIR"
+(cd "$ARB_DIR" && python3 "$KIT_DIR/pak" status) | grep -q "billing-svc"
+(cd "$ARB_DIR" && python3 "$KIT_DIR/pak" status) | grep -q "upgrade available"
+
+(cd "$ARB_DIR" && python3 "$KIT_DIR/pak" upgrade --projects-only)
 python3 "$KIT_DIR/pak" status "$PROJ" | grep -q "up to date"
 grep -q "Custom Matrix Row: Billing <-> Ledger" "$PROJ/.agents/skills/pak-impact/references/dependency-matrix.md"
 grep -q "Stripe charge lifecycle" "$PROJ/docs/domains/payments.md"

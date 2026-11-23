@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
-PAK_VERSION = "2.1.2"
+PAK_VERSION = "2.2.0"
 PAK_ROOT = Path(__file__).resolve().parent
 TEMPLATES_DIR = PAK_ROOT / "templates"
 
@@ -472,6 +472,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
 
     git_hook_installed = apply_engine_skills_rules_and_hooks(target, agents, hooks_mode)
+    register_project(target)
 
     print(f"\n{GREEN}{BOLD}==> pak v{PAK_VERSION} installed successfully into {target}!{RESET}")
     print(f"    Configured ecosystems : {', '.join(sorted(agents))}")
@@ -485,58 +486,266 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def get_registry_file() -> Path:
+    return resolve_home_dir() / ".config" / "pak" / "registry.json"
+
+
+def is_active_pak_project(p: Path) -> bool:
+    try:
+        rp = p.resolve()
+        return rp != PAK_ROOT and rp.is_dir() and (rp / "pak.config.json").is_file() and (rp / "scripts" / "pak").is_dir()
+    except OSError:
+        return False
+
+
+def find_enclosing_pak_project(start: Path) -> Path | None:
+    cur = start.expanduser().resolve()
+    for candidate in (cur, *cur.parents):
+        if is_active_pak_project(candidate):
+            return candidate
+    return None
+
+
+def load_registered_projects() -> List[Path]:
+    reg_file = get_registry_file()
+    if not reg_file.exists():
+        return []
+    try:
+        raw = json.loads(reg_file.read_text(encoding="utf-8")).get("projects", [])
+        return [Path(p).resolve() for p in raw if is_active_pak_project(Path(p))]
+    except Exception:
+        return []
+
+
+def save_registered_projects(projects: List[Path]) -> None:
+    reg_file = get_registry_file()
+    unique = sorted({str(p.resolve()) for p in projects if is_active_pak_project(p)})
+    try:
+        reg_file.parent.mkdir(parents=True, exist_ok=True)
+        reg_file.write_text(json.dumps({"projects": unique}, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def register_project(target: Path) -> None:
+    if not is_active_pak_project(target):
+        return
+    current = load_registered_projects()
+    current.append(target.resolve())
+    save_registered_projects(current)
+
+
+def unregister_project(target: Path) -> None:
+    reg_file = get_registry_file()
+    if not reg_file.exists():
+        return
+    try:
+        raw = json.loads(reg_file.read_text(encoding="utf-8")).get("projects", [])
+        target_str = str(target.resolve())
+        kept = [p for p in raw if str(Path(p).resolve()) != target_str and is_active_pak_project(Path(p))]
+        reg_file.write_text(json.dumps({"projects": sorted(set(kept))}, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def discover_all_pak_projects() -> List[Path]:
+    """Combines ~/.config/pak/registry.json with fast shallow workspace discovery so zero manual tracking is needed."""
+    found: Dict[str, Path] = {str(p): p for p in load_registered_projects()}
+    enclosing = find_enclosing_pak_project(Path.cwd())
+    if enclosing:
+        found[str(enclosing)] = enclosing
+
+    home = resolve_home_dir()
+    skip_names = {
+        "node_modules", "vendor", "dist", "build", "target", "Library",
+        "Applications", "Pictures", "Music", "Movies", "Downloads", "Trash", "snap",
+    }
+    search_roots = [
+        home / d
+        for d in ("projects", "Projects", "code", "Code", "workspace", "Workspaces", "dev", "Dev", "src", "repos", "github", "GitHub", "gitlab")
+        if (home / d).is_dir()
+    ]
+
+    def scan_dir(cur: Path, depth: int) -> None:
+        if is_active_pak_project(cur):
+            found[str(cur.resolve())] = cur.resolve()
+            return
+        if depth >= 3:
+            return
+        try:
+            with os.scandir(cur) as it:
+                for entry in it:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                    if entry.name.startswith(".") or entry.name in skip_names:
+                        continue
+                    scan_dir(Path(entry.path), depth + 1)
+        except OSError:
+            pass
+
+    for root in search_roots:
+        scan_dir(root, 0)
+
+    result = [found[k] for k in sorted(found)]
+    if result:
+        save_registered_projects(result)
+    return result
+
+
+def self_upgrade_cli() -> bool:
+    """Pulls latest pak commits from origin when clean & behind; returns True if updated (caller should re-exec)."""
+    if not (PAK_ROOT / ".git").exists():
+        print(f"{CYAN}[pak:self] System pak v{PAK_VERSION} ({PAK_ROOT}) is not a git clone; skipping git pull.{RESET}")
+        return False
+
+    dirty = subprocess.run(
+        ["git", "-C", str(PAK_ROOT), "status", "--porcelain"],
+        capture_output=True, text=True, check=False,
+    ).stdout.strip()
+    if dirty:
+        print(f"{CYAN}[pak:self] Local uncommitted edits in {PAK_ROOT} — keeping local pak v{PAK_VERSION}.{RESET}")
+        return False
+
+    remotes = subprocess.run(
+        ["git", "-C", str(PAK_ROOT), "remote"],
+        capture_output=True, text=True, check=False,
+    ).stdout.split()
+    if "origin" not in remotes:
+        print(f"{CYAN}[pak:self] System pak v{PAK_VERSION} has no 'origin' remote — keeping local version.{RESET}")
+        return False
+
+    fetch_proc = subprocess.run(
+        ["git", "-C", str(PAK_ROOT), "fetch", "--quiet", "origin"],
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    if fetch_proc.returncode != 0:
+        print(f"{YELLOW}[pak:self] Could not reach origin (offline?) — continuing with local pak v{PAK_VERSION}.{RESET}")
+        return False
+
+    upstream_ref = "@{u}"
+    chk = subprocess.run(
+        ["git", "-C", str(PAK_ROOT), "rev-parse", "--verify", "--quiet", upstream_ref],
+        capture_output=True, text=True, check=False,
+    )
+    if chk.returncode != 0:
+        upstream_ref = "origin/main"
+
+    counts = subprocess.run(
+        ["git", "-C", str(PAK_ROOT), "rev-list", "--left-right", "--count", f"HEAD...{upstream_ref}"],
+        capture_output=True, text=True, check=False,
+    )
+    if counts.returncode != 0:
+        print(f"{GREEN}[pak:self] System pak CLI is at v{PAK_VERSION}.{RESET}")
+        return False
+
+    parts = counts.stdout.strip().split()
+    ahead, behind = (int(parts[0]), int(parts[1])) if len(parts) == 2 else (0, 0)
+    old_sha = subprocess.run(["git", "-C", str(PAK_ROOT), "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=False).stdout.strip()
+
+    if behind == 0:
+        if ahead > 0:
+            print(f"{GREEN}[pak:self] System pak CLI is ahead of origin by {ahead} commit(s) (v{PAK_VERSION}, {old_sha}).{RESET}")
+        else:
+            print(f"{GREEN}[pak:self] System pak CLI is up to date (v{PAK_VERSION}, {old_sha}).{RESET}")
+        return False
+
+    if ahead > 0:
+        print(f"{YELLOW}[pak:self] Local pak branch diverged from origin ({ahead} ahead, {behind} behind) — skipping auto-merge.{RESET}")
+        return False
+
+    pull_proc = subprocess.run(
+        ["git", "-C", str(PAK_ROOT), "merge", "--ff-only", upstream_ref],
+        capture_output=True, text=True, check=False,
+    )
+    if pull_proc.returncode == 0:
+        new_sha = subprocess.run(["git", "-C", str(PAK_ROOT), "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=False).stdout.strip()
+        make_executable(PAK_ROOT / "pak")
+        print(f"{GREEN}{BOLD}[pak:self] Upgraded system pak CLI ({old_sha} -> {new_sha})!{RESET}")
+        return True
+
+    print(f"{YELLOW}[pak:self] Fast-forward pull failed: {pull_proc.stderr.strip()}{RESET}")
+    return False
+
+
+def upgrade_single_project(target: Path, default_cfg: Dict[str, Any]) -> bool:
+    cfg_path = target / "pak.config.json"
+    if not cfg_path.exists():
+        print(f"[pak:upgrade] Skipping {target}: pak.config.json not found (run `pak init {target}` first).", file=sys.stderr)
+        return False
+
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    old_ver = cfg.get("pak_version", "1.x/2.0")
+    agents = set(cfg.get("agents") or ["google", "anthropic", "openai"])
+    hooks_mode = infer_existing_hooks_mode(target, cfg)
+
+    ordered_cfg: Dict[str, Any] = {"pak_version": PAK_VERSION}
+    for k, v in cfg.items():
+        if k != "pak_version":
+            ordered_cfg[k] = v
+    ordered_cfg["agents"] = sorted(agents)
+    ordered_cfg["hooks_mode"] = hooks_mode
+    for k, v in default_cfg.items():
+        ordered_cfg.setdefault(k, v)
+    ordered_cfg.setdefault("checks", {})
+    for ck, cv in default_cfg["checks"].items():
+        ordered_cfg["checks"].setdefault(ck, cv)
+    cfg_path.write_text(json.dumps(ordered_cfg, indent=2) + "\n", encoding="utf-8")
+
+    apply_engine_skills_rules_and_hooks(target, agents, hooks_mode)
+    register_project(target)
+    print(
+        f"{GREEN}[pak:upgrade] Upgraded {ordered_cfg.get('project_name', target.name)} ({old_ver} -> v{PAK_VERSION}){RESET} "
+        f"[{target}]: synced scripts/pak/*, skills, rule blocks, hooks & SQLite Atlas."
+    )
+    return True
+
+
 def cmd_upgrade(args: argparse.Namespace) -> int:
-    """Zero-prompt project upgrader: updates engine scripts, skill definitions, hooks & rule markers while preserving all project config & dossiers."""
+    """Unified zero-prompt upgrader: upgrades system-wide `pak` CLI AND all registered/discovered (or specified) projects from any directory."""
+    if not args.projects_only and not args.skip_self_pull:
+        try:
+            updated_self = self_upgrade_cli()
+        except Exception as exc:
+            print(f"{YELLOW}[pak:self] Self-update check skipped ({exc}).{RESET}")
+            updated_self = False
+        if updated_self:
+            # Re-exec newly pulled pak binary so project upgrades immediately use the new version & templates!
+            reexec_args = [sys.executable, str(PAK_ROOT / "pak"), "upgrade", "--skip-self-pull"]
+            if args.self_only:
+                reexec_args.append("--self-only")
+            reexec_args.extend(args.targets)
+            os.execv(sys.executable, reexec_args)
+
+    if args.self_only:
+        return 0
+
     default_cfg = json.loads((TEMPLATES_DIR / "pak.config.default.json").read_text(encoding="utf-8"))
-    targets = args.targets or ["."]
+    if args.targets:
+        resolved_targets: List[Path] = []
+        for raw_t in args.targets:
+            cand = Path(raw_t).expanduser().resolve()
+            enc = find_enclosing_pak_project(cand)
+            resolved_targets.append(enc if enc else cand)
+    else:
+        resolved_targets = discover_all_pak_projects()
+        if not resolved_targets:
+            print(f"{CYAN}[pak:upgrade] No pak-enabled projects found on this machine yet (run `pak init <project-dir>` once per repo).{RESET}")
+            return 0
+
     rc = 0
-
-    for raw_t in targets:
-        target = Path(raw_t).expanduser().resolve()
-        cfg_path = target / "pak.config.json"
-        if not cfg_path.exists():
-            print(f"[pak:upgrade] Skipping {target}: pak.config.json not found (run `pak init {target}` first).", file=sys.stderr)
+    upgraded_cnt = 0
+    for target in resolved_targets:
+        if upgrade_single_project(target, default_cfg):
+            upgraded_cnt += 1
+        else:
             rc = 1
-            continue
 
-        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-        old_ver = cfg.get("pak_version", "1.x/2.0")
-        agents = set(cfg.get("agents") or ["google", "anthropic", "openai"])
-        hooks_mode = infer_existing_hooks_mode(target, cfg)
-
-        # Merge any newly introduced schema defaults without overwriting ANY project setting
-        ordered_cfg: Dict[str, Any] = {"pak_version": PAK_VERSION}
-        for k, v in cfg.items():
-            if k != "pak_version":
-                ordered_cfg[k] = v
-        ordered_cfg["agents"] = sorted(agents)
-        ordered_cfg["hooks_mode"] = hooks_mode
-        for k, v in default_cfg.items():
-            ordered_cfg.setdefault(k, v)
-        ordered_cfg.setdefault("checks", {})
-        for ck, cv in default_cfg["checks"].items():
-            ordered_cfg["checks"].setdefault(ck, cv)
-        cfg_path.write_text(json.dumps(ordered_cfg, indent=2) + "\n", encoding="utf-8")
-
-        apply_engine_skills_rules_and_hooks(target, agents, hooks_mode)
-        print(
-            f"{GREEN}[pak:upgrade] Upgraded {ordered_cfg.get('project_name', target.name)} ({old_ver} -> v{PAK_VERSION}){RESET}: "
-            f"synced scripts/pak/*, skills, rule blocks, hooks & SQLite Atlas "
-            f"(preserved pak.config.json, docs/domains/*.md & dependency-matrix.md)."
-        )
-
+    print(f"{GREEN}{BOLD}==> pak upgrade complete:{RESET} {upgraded_cnt}/{len(resolved_targets)} project(s) synced to pak v{PAK_VERSION}.")
     return rc
 
 
-def cmd_status(args: argparse.Namespace) -> int:
-    target = Path(args.target).expanduser().resolve()
-    cfg_path = target / "pak.config.json"
-    print(f"{BOLD}pak CLI version      :{RESET} v{PAK_VERSION} ({PAK_ROOT})")
-    if not cfg_path.exists():
-        print(f"{YELLOW}Project status       : NOT INSTALLED in {target} (run `pak init`){RESET}")
-        return 1
-
-    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+def print_single_project_status(target: Path) -> None:
+    cfg = json.loads((target / "pak.config.json").read_text(encoding="utf-8"))
     proj_ver = cfg.get("pak_version", "pre-2.1")
     ver_note = f"{GREEN}(up to date){RESET}" if proj_ver == PAK_VERSION else f"{YELLOW}(upgrade available -> run `pak upgrade`){RESET}"
     domains_cnt = len(list((target / "docs" / "domains").glob("*.md"))) if (target / "docs" / "domains").exists() else 0
@@ -550,6 +759,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         except Exception:
             pass
 
+    register_project(target)
     print(f"{BOLD}Target project       :{RESET} {cfg.get('project_name', target.name)} ({target})")
     print(f"{BOLD}Project pak_version  :{RESET} v{proj_ver} {ver_note}")
     print(f"{BOLD}AI ecosystems        :{RESET} {', '.join(cfg.get('agents', []))}")
@@ -557,6 +767,38 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"{BOLD}SQLite indexed files :{RESET} {indexed_cnt} ({db_path.name if db_path.exists() else 'not built'})")
     print(f"{BOLD}Domain dossiers      :{RESET} {domains_cnt} in docs/domains/")
     print(f"{BOLD}Linked microservices :{RESET} {len(cfg.get('linked_repos', []))} {cfg.get('linked_repos', [])}")
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    print(f"{BOLD}pak CLI version      :{RESET} v{PAK_VERSION} ({PAK_ROOT})")
+    explicit_arg = args.target is not None
+    raw_target = Path(args.target if explicit_arg else ".").expanduser().resolve()
+    enc = find_enclosing_pak_project(raw_target)
+
+    if enc:
+        print_single_project_status(enc)
+        return 0
+
+    if explicit_arg and (raw_target / "pak.config.json").exists():
+        print_single_project_status(raw_target)
+        return 0
+
+    if explicit_arg:
+        print(f"{YELLOW}Project status       : NOT INSTALLED in {raw_target} (run `pak init {raw_target}`){RESET}")
+        return 1
+
+    all_projects = discover_all_pak_projects()
+    if not all_projects:
+        print(f"{CYAN}Registered projects  : 0 found on this machine (run `pak init <project-dir>` to onboard a repo){RESET}")
+        return 0
+
+    print(f"{BOLD}Managed pak projects :{RESET} {len(all_projects)} discovered on this machine")
+    for p in all_projects:
+        cfg = json.loads((p / "pak.config.json").read_text(encoding="utf-8"))
+        pver = cfg.get("pak_version", "pre-2.1")
+        badge = f"{GREEN}up to date{RESET}" if pver == PAK_VERSION else f"{YELLOW}upgrade available{RESET}"
+        dcnt = len(list((p / "docs" / "domains").glob("*.md"))) if (p / "docs" / "domains").exists() else 0
+        print(f"  - {BOLD}{cfg.get('project_name', p.name)}{RESET} [v{pver}, {badge}] -> {p} ({dcnt} domains)")
     return 0
 
 
@@ -685,11 +927,13 @@ def cmd_install_cli(_: argparse.Namespace) -> int:
 
 
 def cmd_passthrough(script_rel: str, target_dir: str, extra_args: List[str] | None = None) -> int:
-    target = Path(target_dir).expanduser().resolve()
+    raw = Path(target_dir).expanduser().resolve()
+    target = find_enclosing_pak_project(raw) or raw
     script = target / "scripts" / "pak" / script_rel
     if not script.exists():
         print(f"[pak] '{script}' not found in {target}. Run `pak init {target}` first.", file=sys.stderr)
         return 1
+    register_project(target)
     cmd = [sys.executable, str(script)] if script.suffix == ".py" else ["bash", str(script)]
     if extra_args:
         cmd.extend(extra_args)
@@ -769,6 +1013,7 @@ def prune_empty_dirs(candidates: List[Path]) -> None:
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
     target = Path(args.target).expanduser().resolve()
+    unregister_project(target)
     for md in ("AGENTS.md", "GEMINI.md", "CLAUDE.md"):
         remove_markdown_block(target / md)
     for sname in SKILL_NAMES:
@@ -829,6 +1074,10 @@ def cmd_uninstall_cli(_: argparse.Namespace) -> int:
         if remove_shell_rc_path(rc):
             print(f"{GREEN}[pak] Removed pak PATH block from {rc}{RESET}")
 
+    reg_dir = home / ".config" / "pak"
+    if reg_dir.is_dir():
+        shutil.rmtree(reg_dir)
+
     print(f"To remove the pak repository itself, run: rm -rf {PAK_ROOT}")
     return 0
 
@@ -851,11 +1100,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--i18n-dir", default=None, help="Relative path to JSON locale catalogs")
     p_init.add_argument("--link-repos", default="", help="Comma-separated sibling microservice repo paths")
 
-    p_up = sub.add_parser("upgrade", help="Zero-prompt upgrade of engine, skills, hooks & rule blocks (preserves config & dossiers)")
-    p_up.add_argument("targets", nargs="*", help="One or more project directories to upgrade (default: .)")
+    p_up = sub.add_parser("upgrade", help="Upgrade system pak CLI AND all registered/discovered pak projects from any directory")
+    p_up.add_argument("targets", nargs="*", help="Optional specific project directory(ies); omit to upgrade ALL pak projects on this machine")
+    p_up.add_argument("--self-only", action="store_true", help="Only pull updates for the system pak CLI")
+    p_up.add_argument("--projects-only", action="store_true", help="Skip git pull on system pak CLI and only sync projects")
+    p_up.add_argument("--skip-self-pull", action="store_true", help=argparse.SUPPRESS)
 
-    p_st = sub.add_parser("status", help="Show pak version alignment, active hooks, SQLite index & domain dossier count")
-    p_st.add_argument("target", nargs="?", default=".")
+    p_st = sub.add_parser("status", help="Show global pak CLI + all managed projects (or detailed status when inside a project)")
+    p_st.add_argument("target", nargs="?", default=None)
 
     p_link = sub.add_parser("link", help="Link one or more sibling microservice repositories for federated contract checks")
     p_link.add_argument("siblings", nargs="+", help="Relative or absolute paths to sibling pak-enabled repos")

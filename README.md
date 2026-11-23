@@ -188,27 +188,26 @@ pak init /path/to/your-project --yes --agents all --stage existing --hooks both 
 
 ```bash
 pak --version                    # Print installed global pak CLI version
-pak init [dir]                   # Interactive (or --yes) installer for any repository
-pak upgrade [dir...]             # Zero-prompt upgrade of engine, skills, hooks & rule blocks
-pak status [dir]                 # Show version alignment, hooks, SQLite index & dossier status
+pak init [dir]                   # Interactive (or --yes) installer for a new/existing repository
+pak upgrade [dir...]             # From ANY folder: upgrades system pak CLI + ALL your pak projects!
+pak status [dir]                 # From ANY folder: lists all managed projects (or detailed view inside a repo)
 pak link <sibling_repo...>       # Link sibling microservice repos for cross-repo contract tracing
-pak install-cli                  # Symlink `pak` into ~/.local/bin/pak
+pak install-cli                  # Symlink ~/.local/bin/pak & inject PATH into zsh/bash/fish RC
 pak atlas [dir]                  # Incrementally update .pak/index.sqlite & docs/atlas/00..05 (<50ms)
 pak trace <query> [dir]          # Search FTS5 symbols, reverse dependents, co-changes & sibling repos
 pak affected [--run] [dir]       # Print (or execute) ONLY unit tests impacted by current git diff
 pak check [dir]                  # Run all contract, duplicate, dependency, codegen, i18n & evolution gates
 pak uninstall [--purge] [dir]    # Cleanly remove pak hooks, skills, cache, atlas & rule blocks
-pak uninstall-cli                # Remove the global ~/.local/bin/pak symlink
+pak uninstall-cli                # Remove ~/.local/bin/pak, shell PATH blocks & local project registry
 ```
 
-### Upgrading `pak` Over Time (System-Wide & Project-Level)
-1. **System-Wide CLI Upgrade:** `pak install-cli` creates a live symlink (`~/.local/bin/pak -> /path/to/project-awareness-kit/pak`). Editing or running `git pull` inside `project-awareness-kit` immediately updates the global CLI and templates.
-2. **Project-Level Engine & Rules Upgrade (`pak upgrade`):** Target repositories vendor `scripts/pak/*` and `.agents/skills/pak-*` so CI and teammates work without needing `pak` installed globally. Whenever `pak` gains new features, run:
-   ```bash
-   pak upgrade                             # Upgrade current repository
-   pak upgrade ~/projects/svc-a ~/projects/svc-b   # Batch-upgrade multiple microservices
-   ```
-   `pak upgrade` replaces `scripts/pak/*`, updates `SKILL.md` files, refreshes `<!-- PAK:START --> ... <!-- PAK:END -->` blocks in `AGENTS.md`/`GEMINI.md`/`CLAUDE.md`, updates lifecycle hooks, stamps `"pak_version"` in `pak.config.json`, and migrates `.pak/index.sqlite`—**while strictly preserving** all project-owned settings in `pak.config.json`, `docs/domains/*.md`, and `.agents/skills/pak-impact/references/dependency-matrix.md`.
+### Unified Zero-Friction `pak upgrade` (System CLI + All Projects at Once)
+You never have to `cd` into individual repositories or separate system upgrades from project upgrades. `pak` maintains a lightweight local project registry (`~/.config/pak/registry.json`, combined with automatic shallow workspace discovery and `git clone` self-healing):
+- Run **`pak upgrade`** from **any directory on your computer** (even `~/`):
+  1. **System Self-Upgrade:** Fast-forwards your system `pak` installation from `origin/main` (skipping safely if you have local uncommitted edits or are offline) and re-execs the updated CLI immediately.
+  2. **All-Projects Sync:** Automatically upgrades `scripts/pak/*`, `SKILL.md` files, `<!-- PAK:START -->` blocks, lifecycle hooks, `"pak_version"`, and `.pak/index.sqlite` across **every `pak`-enabled project on your machine** in `<1s`—**while strictly preserving** all project-owned rules in `pak.config.json`, `docs/domains/*.md`, and `dependency-matrix.md`.
+  *(Pass `pak upgrade ./my-svc` to target a single repo, `--self-only` for CLI only, or `--projects-only` to skip `git pull`.)*
+- Run **`pak status`** from outside a repository to view a dashboard of all `pak`-managed projects on your machine, or inside a repository (including any nested subdirectory) for detailed stats.
 
 ---
 

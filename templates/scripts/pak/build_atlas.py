@@ -1002,12 +1002,56 @@ def build_system_map(cfg: Dict[str, Any]) -> str:
     return "\n".join(out) + "\n"
 
 
+def ensure_clone_self_healed(cfg: Dict[str, Any]) -> None:
+    """Auto-registers cloned repo in ~/.config/pak/registry.json & restores .git/hooks/pre-commit if configured."""
+    if not CONFIG_PATH.exists():
+        return
+    # 1. Auto-register in user's local pak registry so global `pak upgrade` finds cloned repos automatically
+    try:
+        env_home = os.environ.get("HOME", "").strip()
+        home = Path(env_home).expanduser() if env_home else Path.home()
+        reg_file = home / ".config" / "pak" / "registry.json"
+        existing: List[str] = []
+        if reg_file.exists():
+            existing = json.loads(reg_file.read_text(encoding="utf-8")).get("projects", [])
+        root_str = str(ROOT)
+        if root_str not in existing:
+            existing.append(root_str)
+            reg_file.parent.mkdir(parents=True, exist_ok=True)
+            reg_file.write_text(json.dumps({"projects": sorted(set(existing))}, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+    # 2. Restore .git/hooks/pre-commit after a fresh `git clone` when hooks_mode includes git
+    if cfg.get("hooks_mode", "both") in ("both", "git") and (ROOT / ".git").is_dir():
+        hook_file = ROOT / ".git" / "hooks" / "pre-commit"
+        sh_start, sh_end = "# --- PAK:START ---", "# --- PAK:END ---"
+        try:
+            current = hook_file.read_text(encoding="utf-8", errors="replace") if hook_file.exists() else ""
+            if sh_start not in current:
+                block = (
+                    f"{sh_start}\n"
+                    'ROOT_GIT_DIR="$(git rev-parse --show-toplevel)"\n'
+                    'if [ -x "$ROOT_GIT_DIR/scripts/pak/verify_impact.sh" ]; then\n'
+                    '    "$ROOT_GIT_DIR/scripts/pak/verify_impact.sh"\n'
+                    "fi\n"
+                    f"{sh_end}"
+                )
+                hook_file.parent.mkdir(parents=True, exist_ok=True)
+                content = (current.rstrip() + "\n\n" + block + "\n") if current.strip() else ("#!/usr/bin/env bash\nset -e\n\n" + block + "\n")
+                hook_file.write_text(content, encoding="utf-8")
+                hook_file.chmod(hook_file.stat().st_mode | 0o111)
+        except OSError:
+            pass
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build pak v2.0 incremental SQLite Atlas & Dependency Graph")
+    parser = argparse.ArgumentParser(description="Build pak v2.2 incremental SQLite Atlas & Dependency Graph")
     parser.add_argument("--quiet", action="store_true", help="Suppress summary output")
     args = parser.parse_args()
 
     cfg = load_config()
+    ensure_clone_self_healed(cfg)
     ATLAS_DIR.mkdir(parents=True, exist_ok=True)
 
     conn, has_fts = init_db()

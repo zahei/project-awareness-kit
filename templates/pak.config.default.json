@@ -1,5 +1,5 @@
 {
-  "pak_version": "2.1.2",
+  "pak_version": "2.2.0",
   "project_name": "my-project",
   "agents": ["google", "anthropic", "openai"],
   "hooks_mode": "both",
