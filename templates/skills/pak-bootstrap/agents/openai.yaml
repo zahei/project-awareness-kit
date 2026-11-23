@@ -1,0 +1,4 @@
+interface:
+  display_name: "PAK Bootstrap & Audit"
+  short_description: "Audit existing codebase vs stale docs and generate docs/domains/*.md dossiers"
+  default_prompt: "Execute the pak-bootstrap skill: run build_atlas.py, audit code vs stale markdown docs, configure pak.config.json, and generate concise code-verified docs/domains/*.md dossiers."

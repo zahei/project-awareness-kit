@@ -1,0 +1,4 @@
+interface:
+  display_name: "PAK Codebase Atlas"
+  short_description: "Prevent duplicate functions and reuse existing symbols via docs/atlas/"
+  default_prompt: "Check docs/atlas/ and run scripts/pak/blast_radius.sh to find reusable functions before implementing."

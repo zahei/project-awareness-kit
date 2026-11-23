@@ -1,0 +1,4 @@
+interface:
+  display_name: "PAK Domain Memory"
+  short_description: "Load and maintain code-verified workflows and corner cases in docs/domains/"
+  default_prompt: "Read the relevant docs/domains/*.md dossier before editing and update it in the same commit if workflows or corner cases change."

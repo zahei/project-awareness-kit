@@ -1,0 +1,4 @@
+interface:
+  display_name: "PAK Impact Analyzer"
+  short_description: "Trace cross-layer callers and implicit side effects before editing code"
+  default_prompt: "Run scripts/pak/blast_radius.sh and check dependency-matrix.md to assess full blast radius before making changes."

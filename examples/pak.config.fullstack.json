@@ -1,0 +1,41 @@
+{
+  "project_name": "acme-platform",
+  "agents": ["google", "anthropic", "openai"],
+  "quarantined_paths": [
+    "legacy/old-prototype",
+    "sql/old_prisma_dump.sql"
+  ],
+  "generated_paths": [
+    "node_modules",
+    "dist",
+    "build",
+    "web/src/gen",
+    "internal/gen"
+  ],
+  "codegen_pairs": [
+    {
+      "name": "Protobuf",
+      "source_regex": "^proto/.*\\.proto$",
+      "generated_regex": "(web/src/gen/|internal/gen/)",
+      "remedy": "Run `make proto` to regenerate ConnectRPC / Protobuf bindings."
+    },
+    {
+      "name": "SQLC",
+      "source_regex": "^sql/queries/.*\\.sql$",
+      "generated_regex": "internal/db/sqlc/",
+      "remedy": "Run `make sqlc` to regenerate typed SQL queries."
+    }
+  ],
+  "checks": {
+    "enforce_uuid_v7": true,
+    "i18n_locales_dir": "web/src/locales",
+    "i18n_base_locale": "en.json",
+    "banned_patterns": [
+      {
+        "regex": "\\b(bg|text|border)-(purple|violet|fuchsia)-[0-9]{2,3}\\b",
+        "path_regex": "^web/src/(components|pages)/.*\\.(tsx|ts)$",
+        "message": "Off-palette decorative color detected; use semantic CSS design tokens."
+      }
+    ]
+  }
+}

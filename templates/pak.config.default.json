@@ -1,0 +1,43 @@
+{
+  "project_name": "my-project",
+  "agents": ["google", "anthropic", "openai"],
+  "quarantined_paths": [],
+  "generated_paths": [
+    "node_modules",
+    "dist",
+    "build",
+    ".next",
+    "target",
+    "vendor",
+    "coverage",
+    ".venv",
+    "venv",
+    "__pycache__"
+  ],
+  "codegen_pairs": [
+    {
+      "name": "Protobuf",
+      "source_regex": "^proto/.*\\.proto$",
+      "generated_regex": "(gen/|pb/|\\.pb\\.|_pb2\\.py)",
+      "remedy": "Regenerate Protobuf / RPC bindings (e.g. `buf generate` or `make proto`)."
+    },
+    {
+      "name": "SQLC",
+      "source_regex": "^sql/queries/.*\\.sql$",
+      "generated_regex": "sqlc/",
+      "remedy": "Regenerate typed SQL queries (e.g. `sqlc generate` or `make sqlc`)."
+    },
+    {
+      "name": "Prisma",
+      "source_regex": "prisma/schema\\.prisma$",
+      "generated_regex": "(prisma/migrations/|generated/)",
+      "remedy": "Sync Prisma schema/migrations (`npx prisma generate`)."
+    }
+  ],
+  "checks": {
+    "enforce_uuid_v7": false,
+    "i18n_locales_dir": "",
+    "i18n_base_locale": "en.json",
+    "banned_patterns": []
+  }
+}

@@ -1,0 +1,528 @@
+#!/usr/bin/env python3
+"""
+pak — Project Awareness Kit CLI & Interactive Multi-Agent Installer
+Compatible with Google (Antigravity `agy` / Gemini CLI), Anthropic (`claude` Claude Code),
+and OpenAI (`codex` Codex CLI) + Cursor/Windsurf (`AGENTS.md`).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Set
+
+PAK_ROOT = Path(__file__).resolve().parent
+TEMPLATES_DIR = PAK_ROOT / "templates"
+
+PAK_MD_START = "<!-- PAK:START -->"
+PAK_MD_END = "<!-- PAK:END -->"
+PAK_SH_START = "# --- PAK:START ---"
+PAK_SH_END = "# --- PAK:END ---"
+
+CYAN = "\033[0;36m"
+GREEN = "\033[0;32m"
+YELLOW = "\033[0;33m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
+
+def ask_choice(prompt: str, options: List[tuple[str, str]], default_idx: int = 1) -> str:
+    print(f"\n{BOLD}{prompt}{RESET}")
+    for idx, (_, label) in enumerate(options, 1):
+        rec = f" {GREEN}(default){RESET}" if idx == default_idx else ""
+        print(f"  [{idx}] {label}{rec}")
+    while True:
+        raw = input(f"{CYAN}Select [1-{len(options)}] (Enter={default_idx}): {RESET}").strip()
+        if not raw:
+            return options[default_idx - 1][0]
+        if raw.isdigit() and 1 <= int(raw) <= len(options):
+            return options[int(raw) - 1][0]
+        print(f"{YELLOW}Please enter a number between 1 and {len(options)}.{RESET}")
+
+
+def ask_yes_no(prompt: str, default: bool = False) -> bool:
+    hint = "Y/n" if default else "y/N"
+    raw = input(f"{CYAN}{prompt} [{hint}]: {RESET}").strip().lower()
+    if not raw:
+        return default
+    return raw in ("y", "yes", "1", "true")
+
+
+def detect_repo_features(target: Path) -> Dict[str, Any]:
+    stacks: List[str] = []
+    if (target / "go.mod").exists() or list(target.glob("cmd/**/*.go")) or list(target.glob("internal/**/*.go")) or list(target.glob("**/*.go")):
+        stacks.append("Go")
+    if (target / "package.json").exists() or (target / "web" / "package.json").exists():
+        stacks.append("TypeScript/JS")
+    if (target / "pyproject.toml").exists() or (target / "requirements.txt").exists():
+        stacks.append("Python")
+    if (target / "Cargo.toml").exists():
+        stacks.append("Rust")
+    if list(target.glob("proto/**/*.proto")):
+        stacks.append("Protobuf")
+    if list(target.glob("sql/**/*.sql")) or list(target.glob("migrations/**/*.sql")):
+        stacks.append("SQL")
+    if list(target.glob("**/schema.prisma")):
+        stacks.append("Prisma")
+
+    # Auto-detect i18n locales dir containing en.json
+    i18n_dir = ""
+    for candidate in sorted(target.glob("**/locales/en.json")):
+        rel = candidate.parent.relative_to(target).as_posix()
+        if "node_modules" not in rel and ".git" not in rel:
+            i18n_dir = rel
+            break
+
+    has_code = bool(stacks) or any(
+        p.suffix in (".go", ".ts", ".tsx", ".py", ".rs", ".js")
+        for p in target.glob("*/*")
+        if p.is_file()
+    )
+    return {"stacks": stacks, "i18n_dir": i18n_dir, "has_existing_code": has_code}
+
+
+def upsert_markdown_block(file_path: Path, block_text: str, header_if_new: str = "") -> None:
+    block = block_text.strip()
+    if file_path.exists():
+        existing = file_path.read_text(encoding="utf-8")
+        if PAK_MD_START in existing and PAK_MD_END in existing:
+            before = existing.split(PAK_MD_START)[0].rstrip()
+            after = existing.split(PAK_MD_END, 1)[1].lstrip()
+            parts = [p for p in (before, block, after) if p]
+            file_path.write_text("\n\n".join(parts) + "\n", encoding="utf-8")
+        else:
+            file_path.write_text(existing.rstrip() + "\n\n" + block + "\n", encoding="utf-8")
+    else:
+        prefix = (header_if_new.strip() + "\n\n") if header_if_new.strip() else ""
+        file_path.write_text(prefix + block + "\n", encoding="utf-8")
+
+
+def remove_markdown_block(file_path: Path) -> None:
+    if not file_path.exists():
+        return
+    txt = file_path.read_text(encoding="utf-8")
+    if PAK_MD_START in txt and PAK_MD_END in txt:
+        before = txt.split(PAK_MD_START)[0].rstrip()
+        after = txt.split(PAK_MD_END, 1)[1].lstrip()
+        merged = "\n\n".join(p for p in (before, after) if p).strip()
+        if merged:
+            file_path.write_text(merged + "\n", encoding="utf-8")
+        else:
+            file_path.unlink()
+
+
+def make_executable(p: Path) -> None:
+    p.chmod(p.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def copy_skill_tree(src_skill: Path, dst_skill: Path, include_openai_yaml: bool) -> None:
+    if dst_skill.is_symlink() or dst_skill.exists():
+        if dst_skill.is_symlink() or dst_skill.is_file():
+            dst_skill.unlink()
+        else:
+            shutil.rmtree(dst_skill)
+    shutil.copytree(src_skill, dst_skill)
+    if not include_openai_yaml:
+        openai_dir = dst_skill / "agents"
+        if openai_dir.exists():
+            shutil.rmtree(openai_dir)
+
+
+def configure_agy_hooks(target: Path) -> None:
+    hooks_path = target / ".agents" / "hooks.json"
+    hooks_path.parent.mkdir(parents=True, exist_ok=True)
+    data: Dict[str, Any] = {}
+    if hooks_path.exists():
+        try:
+            data = json.loads(hooks_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    data["pak-impact-gate"] = {
+        "enabled": True,
+        "Stop": [
+            {
+                "type": "command",
+                "command": "../scripts/pak/verify_impact.sh --agy-hook",
+                "timeout": 20,
+            }
+        ],
+    }
+    hooks_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def configure_claude_hooks(target: Path) -> None:
+    settings_path = target / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    data: Dict[str, Any] = {}
+    if settings_path.exists():
+        try:
+            data = json.loads(settings_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+
+    hooks_obj = data.setdefault("hooks", {})
+    stop_list: List[Any] = hooks_obj.setdefault("Stop", [])
+    pak_cmd = '"$CLAUDE_PROJECT_DIR/scripts/pak/verify_impact.sh" --claude-hook'
+
+    # Avoid duplicate insertion
+    already_present = any("scripts/pak/verify_impact.sh" in json.dumps(entry) for entry in stop_list)
+    if not already_present:
+        stop_list.append(
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": pak_cmd,
+                        "timeout": 20,
+                    }
+                ]
+            }
+        )
+    settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def configure_git_pre_commit(target: Path) -> bool:
+    git_dir = target / ".git"
+    if not git_dir.is_dir():
+        return False
+    hook_file = git_dir / "hooks" / "pre-commit"
+    hook_file.parent.mkdir(parents=True, exist_ok=True)
+    block = (
+        f"{PAK_SH_START}\n"
+        'ROOT_GIT_DIR="$(git rev-parse --show-toplevel)"\n'
+        'if [ -x "$ROOT_GIT_DIR/scripts/pak/verify_impact.sh" ]; then\n'
+        '    "$ROOT_GIT_DIR/scripts/pak/verify_impact.sh"\n'
+        "fi\n"
+        f"{PAK_SH_END}"
+    )
+    if hook_file.exists():
+        existing = hook_file.read_text(encoding="utf-8")
+        if PAK_SH_START in existing and PAK_SH_END in existing:
+            before = existing.split(PAK_SH_START)[0].rstrip()
+            after = existing.split(PAK_SH_END, 1)[1].lstrip()
+            content = "\n\n".join(p for p in (before, block, after) if p) + "\n"
+        else:
+            content = existing.rstrip() + "\n\n" + block + "\n"
+    else:
+        content = "#!/usr/bin/env bash\nset -e\n\n" + block + "\n"
+    hook_file.write_text(content, encoding="utf-8")
+    make_executable(hook_file)
+    return True
+
+
+def parse_agents_arg(raw: str) -> Set[str]:
+    items = {x.strip().lower() for x in raw.split(",") if x.strip()}
+    if "all" in items or not items:
+        return {"google", "anthropic", "openai"}
+    valid = {"google", "anthropic", "openai"}
+    unknown = items - valid
+    if unknown:
+        raise ValueError(f"Unknown agent target(s): {unknown}. Valid: all, google, anthropic, openai")
+    return items
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    target = Path(args.target).expanduser().resolve()
+    target.mkdir(parents=True, exist_ok=True)
+    detected = detect_repo_features(target)
+
+    print(f"{BOLD}{CYAN}==> pak (Project Awareness Kit) Installer{RESET}")
+    print(f"    Target project : {target}")
+    if detected["stacks"]:
+        print(f"    Detected stack : {', '.join(detected['stacks'])}")
+
+    interactive = sys.stdin.isatty() and not args.yes
+
+    # 1. Resolve Agents
+    if args.agents:
+        agents = parse_agents_arg(args.agents)
+    elif interactive:
+        choice = ask_choice(
+            "1. Which AI CLI / IDE ecosystems should pak configure?",
+            [
+                ("all", "All — Google (Antigravity/Gemini CLI) + Anthropic (Claude Code) + OpenAI (Codex CLI)"),
+                ("google", "Google only — Antigravity (`agy` / IDE) & Gemini CLI"),
+                ("anthropic", "Anthropic only — Claude Code (`claude` CLI / IDE)"),
+                ("openai", "OpenAI only — Codex CLI (`codex`) & standard `AGENTS.md` IDEs"),
+                ("custom", "Custom combination (e.g. google,anthropic)"),
+            ],
+            default_idx=1,
+        )
+        if choice == "custom":
+            raw_custom = input(f"{CYAN}Enter comma-separated list (google,anthropic,openai): {RESET}").strip()
+            agents = parse_agents_arg(raw_custom or "all")
+        else:
+            agents = parse_agents_arg(choice)
+    else:
+        agents = {"google", "anthropic", "openai"}
+
+    # 2. Resolve Project Stage
+    if args.stage:
+        stage = args.stage
+    elif interactive:
+        default_stage = 1 if detected["has_existing_code"] else 2
+        stage = ask_choice(
+            "2. What stage is this project in?",
+            [
+                ("existing", "Existing / complex codebase (index live symbols now + install /pak-bootstrap audit)"),
+                ("greenfield", "Brand-new / greenfield project (seed starter domain dossier & atlas)"),
+            ],
+            default_idx=default_stage,
+        )
+    else:
+        stage = "existing" if detected["has_existing_code"] else "greenfield"
+
+    # 3. Resolve Hooks / Enforcement Gates
+    if args.hooks:
+        hooks_mode = args.hooks
+    elif interactive:
+        hooks_mode = ask_choice(
+            "3. Which zero-token verification gates should run automatically?",
+            [
+                ("both", "Both AI Stop hooks (.agents/hooks.json + .claude/settings.json) AND Git pre-commit hook"),
+                ("ai", "AI Stop lifecycle hooks only (0 LLM tokens when checks pass)"),
+                ("git", "Git pre-commit hook only (.git/hooks/pre-commit)"),
+                ("none", "Manual CLI checks only (`bash scripts/pak/verify_impact.sh`)"),
+            ],
+            default_idx=1,
+        )
+    else:
+        hooks_mode = "both"
+
+    # 4. Resolve Optional Invariant Packs
+    enforce_uuid_v7 = bool(args.uuid_v7)
+    i18n_dir = args.i18n_dir if args.i18n_dir is not None else detected["i18n_dir"]
+    if interactive and not args.uuid_v7:
+        enforce_uuid_v7 = ask_yes_no("4. Enforce time-ordered UUIDv7 (block UUIDv4 calls in new edits)?", default=False)
+    if interactive and args.i18n_dir is None:
+        if detected["i18n_dir"]:
+            use_i18n = ask_yes_no(
+                f"5. Enforce multi-locale key parity on detected '{detected['i18n_dir']}'?",
+                default=True,
+            )
+            i18n_dir = detected["i18n_dir"] if use_i18n else ""
+
+    # --- Execute Installation ---
+    # A. Install scripts/pak/*
+    dst_scripts = target / "scripts" / "pak"
+    dst_scripts.mkdir(parents=True, exist_ok=True)
+    for script_name in ("build_atlas.py", "blast_radius.sh", "verify_impact.sh"):
+        src = TEMPLATES_DIR / "scripts" / "pak" / script_name
+        dst = dst_scripts / script_name
+        shutil.copy2(src, dst)
+        make_executable(dst)
+
+    # B. Create or merge pak.config.json
+    cfg_path = target / "pak.config.json"
+    default_cfg = json.loads((TEMPLATES_DIR / "pak.config.default.json").read_text(encoding="utf-8"))
+    if cfg_path.exists():
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception:
+            cfg = default_cfg
+    else:
+        cfg = default_cfg
+        cfg["project_name"] = target.name
+
+    cfg["agents"] = sorted(agents)
+    cfg.setdefault("checks", {})
+    cfg["checks"]["enforce_uuid_v7"] = enforce_uuid_v7
+    cfg["checks"]["i18n_locales_dir"] = i18n_dir
+    cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+
+    # C. Install Skills for Selected Ecosystems
+    skill_names = ["pak-atlas", "pak-impact", "pak-domains", "pak-bootstrap"]
+    needs_agents_skills = bool(agents & {"google", "openai"})
+    include_openai_meta = "openai" in agents
+
+    if needs_agents_skills:
+        agents_skills_root = target / ".agents" / "skills"
+        agents_skills_root.mkdir(parents=True, exist_ok=True)
+        for sname in skill_names:
+            copy_skill_tree(TEMPLATES_DIR / "skills" / sname, agents_skills_root / sname, include_openai_meta)
+
+    if "anthropic" in agents:
+        claude_skills_root = target / ".claude" / "skills"
+        claude_skills_root.mkdir(parents=True, exist_ok=True)
+        for sname in skill_names:
+            dst_c = claude_skills_root / sname
+            if needs_agents_skills:
+                # Symlink to .agents/skills/<sname> so dependency-matrix.md stays single-source-of-truth
+                if dst_c.is_symlink() or dst_c.exists():
+                    if dst_c.is_symlink() or dst_c.is_file():
+                        dst_c.unlink()
+                    else:
+                        shutil.rmtree(dst_c)
+                try:
+                    os.symlink(Path("../../.agents/skills") / sname, dst_c)
+                except OSError:
+                    copy_skill_tree(TEMPLATES_DIR / "skills" / sname, dst_c, False)
+            else:
+                copy_skill_tree(TEMPLATES_DIR / "skills" / sname, dst_c, False)
+
+    # D. Upsert Lean Always-On Rules (Non-Destructive)
+    snippet = (TEMPLATES_DIR / "AGENTS.snippet.md").read_text(encoding="utf-8")
+    if not needs_agents_skills and "anthropic" in agents:
+        snippet = snippet.replace(".agents/skills/", ".claude/skills/")
+
+    if agents & {"google", "openai"}:
+        upsert_markdown_block(target / "AGENTS.md", snippet, f"# {target.name} — Agent Rules")
+    if "google" in agents:
+        gemini_pointer = (
+            f"{PAK_MD_START}\n"
+            "## Project Awareness Kit (`pak`)\n"
+            "Follow all reuse, blast-radius, and domain-dossier rules in `AGENTS.md` (`docs/atlas/*` & `docs/domains/*`).\n"
+            f"{PAK_MD_END}"
+        )
+        upsert_markdown_block(target / "GEMINI.md", gemini_pointer)
+    if "anthropic" in agents:
+        claude_snippet = snippet if not (target / "AGENTS.md").exists() else (
+            f"{PAK_MD_START}\n"
+            "## Project Awareness Kit (`pak`)\n"
+            "Read and strictly follow `@AGENTS.md` for `pak-atlas`, `pak-impact`, and `pak-domains` workflows (`docs/atlas/*` & `docs/domains/*`).\n"
+            f"{PAK_MD_END}"
+        )
+        upsert_markdown_block(target / "CLAUDE.md", claude_snippet, f"# {target.name} — Claude Code Rules")
+
+    # E. Configure Deterministic Hooks
+    git_hook_installed = False
+    if hooks_mode in ("both", "ai"):
+        if "google" in agents:
+            configure_agy_hooks(target)
+        if "anthropic" in agents:
+            configure_claude_hooks(target)
+    if hooks_mode in ("both", "git"):
+        git_hook_installed = configure_git_pre_commit(target)
+
+    # F. Create docs/domains/ starter & generate initial zero-token Atlas
+    domains_dir = target / "docs" / "domains"
+    domains_dir.mkdir(parents=True, exist_ok=True)
+    if not list(domains_dir.glob("*.md")):
+        shutil.copy2(
+            TEMPLATES_DIR / "domains" / "00-core-architecture.md",
+            domains_dir / "00-core-architecture.md",
+        )
+
+    subprocess.run([sys.executable, str(dst_scripts / "build_atlas.py")], cwd=str(target), check=True)
+
+    print(f"\n{GREEN}{BOLD}==> pak installed successfully into {target}!{RESET}")
+    print(f"    Configured ecosystems : {', '.join(sorted(agents))}")
+    print(f"    Project stage         : {stage}")
+    print(f"    Verification gates    : {hooks_mode}" + (" (Note: no .git dir yet; run `pak init` again after `git init` for pre-commit)" if hooks_mode in ("both", "git") and not git_hook_installed else ""))
+    print(f"    Generated Atlas       : {target / 'docs/atlas/'}")
+    if stage == "existing":
+        print(f"\n{YELLOW}{BOLD}Next Step (One-Time Brownfield Audit):{RESET}")
+        print("  Open your AI CLI (`agy`, `claude`, or `codex`) in that project and send:")
+        print(f'  {CYAN}"Activate the pak-bootstrap skill to audit this codebase, quarantine dead docs/paths, and write docs/domains/*.md dossiers."{RESET}')
+    else:
+        print(f"\n{YELLOW}{BOLD}Next Step (Greenfield Ready):{RESET}")
+        print("  Start building! Your AI agent will automatically maintain `docs/atlas/*` and `docs/domains/*` as the codebase grows.")
+    return 0
+
+
+def cmd_install_cli(_: argparse.Namespace) -> int:
+    bin_dir = Path.home() / ".local" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    link_path = bin_dir / "pak"
+    pak_exec = PAK_ROOT / "pak"
+    make_executable(pak_exec)
+    if link_path.is_symlink() or link_path.exists():
+        link_path.unlink()
+    os.symlink(pak_exec, link_path)
+    print(f"{GREEN}[pak] Installed global CLI symlink: {link_path} -> {pak_exec}{RESET}")
+    if str(bin_dir) not in os.environ.get("PATH", ""):
+        print(f"{YELLOW}Tip: ensure ~/.local/bin is on your PATH (`export PATH=\"$HOME/.local/bin:$PATH\"`).{RESET}")
+    return 0
+
+
+def cmd_passthrough(script_rel: str, target_dir: str, extra_args: List[str] | None = None) -> int:
+    target = Path(target_dir).expanduser().resolve()
+    script = target / "scripts" / "pak" / script_rel
+    if not script.exists():
+        print(f"[pak] '{script}' not found in {target}. Run `pak init {target}` first.", file=sys.stderr)
+        return 1
+    cmd = [sys.executable, str(script)] if script.suffix == ".py" else ["bash", str(script)]
+    if extra_args:
+        cmd.extend(extra_args)
+    return subprocess.run(cmd, cwd=str(target), check=False).returncode
+
+
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    target = Path(args.target).expanduser().resolve()
+    for md in ("AGENTS.md", "GEMINI.md", "CLAUDE.md"):
+        remove_markdown_block(target / md)
+    for sname in ("pak-atlas", "pak-impact", "pak-domains", "pak-bootstrap"):
+        for base in (target / ".agents" / "skills" / sname, target / ".claude" / "skills" / sname):
+            if base.is_symlink() or base.is_file():
+                base.unlink()
+            elif base.is_dir():
+                shutil.rmtree(base)
+    if (target / "scripts" / "pak").is_dir():
+        shutil.rmtree(target / "scripts" / "pak")
+    print(f"{GREEN}[pak] Removed pak rules, skills, and scripts from {target} (preserved docs/domains/ and pak.config.json).{RESET}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="pak",
+        description="pak (Project Awareness Kit) — Token-frugal context, reuse & blast-radius system for Google, Anthropic, and OpenAI coding agents.",
+    )
+    sub = p.add_subparsers(dest="command")
+
+    p_init = sub.add_parser("init", help="Install or update pak in a target project (interactive by default)")
+    p_init.add_argument("target", nargs="?", default=".", help="Target project directory (default: current directory)")
+    p_init.add_argument("-y", "--yes", action="store_true", help="Non-interactive mode using flags/auto-detected defaults")
+    p_init.add_argument("--agents", default="", help="Agents to configure: all | google,anthropic,openai")
+    p_init.add_argument("--stage", choices=["existing", "greenfield"], default="", help="Project lifecycle stage")
+    p_init.add_argument("--hooks", choices=["both", "ai", "git", "none"], default="", help="Verification gate mode")
+    p_init.add_argument("--uuid-v7", action="store_true", help="Enable UUIDv7 invariant check")
+    p_init.add_argument("--i18n-dir", default=None, help="Relative path to JSON locale catalogs (e.g. web/src/locales)")
+
+    sub.add_parser("install-cli", help="Symlink `pak` into ~/.local/bin/pak for global usage anywhere")
+
+    p_atlas = sub.add_parser("atlas", help="Regenerate docs/atlas/* in a pak-enabled project")
+    p_atlas.add_argument("target", nargs="?", default=".")
+
+    p_trace = sub.add_parser("trace", help="Trace symbol reuse & cross-layer blast radius (0 LLM tokens)")
+    p_trace.add_argument("query", help="Symbol, table, RPC, or component regex to trace")
+    p_trace.add_argument("target", nargs="?", default=".")
+
+    p_check = sub.add_parser("check", help="Run deterministic invariant, codegen & i18n verification")
+    p_check.add_argument("target", nargs="?", default=".")
+
+    p_un = sub.add_parser("uninstall", help="Cleanly remove pak hooks, skills, and rule blocks from a project")
+    p_un.add_argument("target", nargs="?", default=".")
+
+    return p
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        return 0
+    if args.command == "init":
+        return cmd_init(args)
+    if args.command == "install-cli":
+        return cmd_install_cli(args)
+    if args.command == "atlas":
+        return cmd_passthrough("build_atlas.py", args.target)
+    if args.command == "trace":
+        return cmd_passthrough("blast_radius.sh", args.target, [args.query])
+    if args.command == "check":
+        return cmd_passthrough("verify_impact.sh", args.target)
+    if args.command == "uninstall":
+        return cmd_uninstall(args)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
