@@ -177,17 +177,25 @@ if manifest_local.exists() and matched_files:
 print("\n=== RECOMMENDED DOMAIN DOSSIERS (Dynamic Discovery) ===")
 domains_dir = Path("docs/domains")
 paths_re = re.compile(r"^>\s*\*\*Paths:\*\*\s*`?([^`\n]+)`?", re.IGNORECASE)
+summary_re = re.compile(r"^>\s*\*\*Summary:\*\*\s*(.+)$", re.IGNORECASE)
 if domains_dir.exists():
     dossiers = sorted(domains_dir.glob("*.md"))
     matched = []
+    summaries = {}
     for d in dossiers:
         txt = d.read_text(encoding="utf-8", errors="replace")
         pat_str = ""
+        sum_str = ""
         for ln in txt.splitlines()[:12]:
-            m = paths_re.match(ln.strip())
+            s_line = ln.strip()
+            m = paths_re.match(s_line)
             if m:
                 pat_str = m.group(1).strip()
-                break
+            sm = summary_re.match(s_line)
+            if sm:
+                sum_str = sm.group(1).strip()
+        if sum_str:
+            summaries[d.as_posix()] = sum_str
         hit = False
         if pat_str:
             try:
@@ -201,7 +209,8 @@ if domains_dir.exists():
         if hit:
             matched.append(d.as_posix())
     for d in (matched if matched else [d.as_posix() for d in dossiers])[:10]:
-        print(f"  - {d}")
+        s_note = f" — {summaries[d]}" if d in summaries else ""
+        print(f"  - {d}{s_note}")
 else:
     print("  - (none yet — run pak-bootstrap skill)")
 PY

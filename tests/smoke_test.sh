@@ -175,7 +175,7 @@ AFF_OUT="$(python3 "$KIT_DIR/pak" affected --run "$PROJ")"
 echo "$AFF_OUT" | grep -q "go test ./internal/service"
 (cd "$PROJ" && git checkout -- .)
 
-echo "==> [8/10] Verifying self-evolving new-domain routing..."
+echo "==> [8/10] Verifying self-evolving new-domain routing & inline dossier summary..."
 mkdir -p "$PROJ/internal/payments"
 cat > "$PROJ/internal/payments/stripe.go" << 'EOF'
 package payments
@@ -192,7 +192,9 @@ cat > "$PROJ/docs/domains/payments.md" << 'EOF'
 EOF
 EVO_PASS="$(echo '{"terminationReason":"NO_TOOL_CALL","continuationActive":false}' | bash "$PROJ/scripts/pak/verify_impact.sh" --agy-hook)"
 [ "$EVO_PASS" = '{"decision": "allow"}' ]
-python3 "$KIT_DIR/pak" trace "ChargeCustomerCard" "$PROJ" | grep -q "docs/domains/payments.md"
+TRACE_DOM="$(python3 "$KIT_DIR/pak" trace "ChargeCustomerCard" "$PROJ")"
+echo "$TRACE_DOM" | grep -q "docs/domains/payments.md — Stripe charge lifecycle and idempotency keys."
+! grep -q 'pak-atlas.*pak-impact.*pak-domains' "$PROJ/AGENTS.md"
 
 echo "==> [9/10] Verifying global 'pak status' & 'pak upgrade' from an arbitrary non-project folder + clean uninstall..."
 echo "# Custom Matrix Row: Billing <-> Ledger" >> "$PROJ/.agents/skills/pak-impact/references/dependency-matrix.md"

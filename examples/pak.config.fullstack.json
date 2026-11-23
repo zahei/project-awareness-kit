@@ -1,5 +1,5 @@
 {
-  "pak_version": "2.2.0",
+  "pak_version": "2.3.0",
   "project_name": "acme-platform",
   "agents": ["google", "anthropic", "openai"],
   "hooks_mode": "both",
@@ -8,6 +8,11 @@
     "../acme-notification-worker",
     "../acme-web-portal"
   ],
+  "test_runners": {
+    "go": "go test {targets}",
+    "ts": "npm --prefix web test -- --run {targets}",
+    "py": "pytest {targets}"
+  },
   "quarantined_paths": [
     "legacy/old-prototype",
     "sql/old_prisma_dump.sql"

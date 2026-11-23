@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
-PAK_VERSION = "2.2.0"
+PAK_VERSION = "2.3.0"
 PAK_ROOT = Path(__file__).resolve().parent
 TEMPLATES_DIR = PAK_ROOT / "templates"
 
@@ -311,7 +311,7 @@ def apply_engine_skills_rules_and_hooks(
         claude_snippet = snippet if not (target / "AGENTS.md").exists() else (
             f"{PAK_MD_START}\n"
             "## Project Awareness Kit (`pak`)\n"
-            "Read and strictly follow `@AGENTS.md` for `pak-atlas`, `pak-impact`, and `pak-domains` workflows (`docs/atlas/*` & `docs/domains/*`).\n"
+            "Follow `@AGENTS.md` for tiered architecture lookup and living-domain rules (`docs/atlas/*` & `docs/domains/*`).\n"
             f"{PAK_MD_END}"
         )
         upsert_markdown_block(target / "CLAUDE.md", claude_snippet, f"# {target.name} — Claude Code Rules")

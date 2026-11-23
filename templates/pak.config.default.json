@@ -1,9 +1,10 @@
 {
-  "pak_version": "2.2.0",
+  "pak_version": "2.3.0",
   "project_name": "my-project",
   "agents": ["google", "anthropic", "openai"],
   "hooks_mode": "both",
   "linked_repos": [],
+  "test_runners": {},
   "quarantined_paths": [],
   "generated_paths": [
     "node_modules",

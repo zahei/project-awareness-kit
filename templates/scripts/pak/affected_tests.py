@@ -9,16 +9,39 @@ in 1–3 seconds instead of running 30-minute full CI test suites.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Set
+from typing import Dict, List, Set
 
 ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = ROOT / ".pak" / "index.sqlite"
+
+
+def load_test_runners() -> Dict[str, str]:
+    cfg_path = ROOT / "pak.config.json"
+    if not cfg_path.exists():
+        return {}
+    try:
+        raw = json.loads(cfg_path.read_text(encoding="utf-8")).get("test_runners") or {}
+        if isinstance(raw, dict):
+            return {str(k).strip().lower(): str(v).strip() for k, v in raw.items() if str(v).strip()}
+    except Exception:
+        pass
+    return {}
+
+
+def format_runner_cmd(runners: Dict[str, str], lang: str, default_cmd: str, targets: str) -> str:
+    tpl = runners.get(lang, "").strip()
+    if not tpl:
+        return default_cmd
+    if "{targets}" in tpl:
+        return tpl.replace("{targets}", targets)
+    return f"{tpl} {targets}".strip()
 
 
 def get_changed_files() -> List[str]:
@@ -149,18 +172,23 @@ def compute_affected_commands(changed: List[str]) -> List[str]:
     if conn:
         conn.close()
 
+    runners = load_test_runners()
     commands: List[str] = []
     if Testable_go_pkgs:
-        commands.append("go test " + " ".join(Testable_go_pkgs))
+        targets = " ".join(Testable_go_pkgs)
+        commands.append(format_runner_cmd(runners, "go", f"go test {targets}", targets))
     if ts_test_files:
         if (ROOT / "web" / "package.json").exists():
             rel_to_web = [f.removeprefix("web/") for f in sorted(ts_test_files) if f.startswith("web/")]
             if rel_to_web:
-                commands.append("npm --prefix web test -- --run " + " ".join(rel_to_web))
+                targets = " ".join(rel_to_web)
+                commands.append(format_runner_cmd(runners, "ts", f"npm --prefix web test -- --run {targets}", targets))
         elif (ROOT / "package.json").exists():
-            commands.append("npx vitest run " + " ".join(sorted(ts_test_files)))
+            targets = " ".join(sorted(ts_test_files))
+            commands.append(format_runner_cmd(runners, "ts", f"npx vitest run {targets}", targets))
     if py_test_files:
-        commands.append("pytest " + " ".join(sorted(py_test_files)))
+        targets = " ".join(sorted(py_test_files))
+        commands.append(format_runner_cmd(runners, "py", f"pytest {targets}", targets))
 
     return commands
 

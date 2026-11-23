@@ -1,4 +1,4 @@
-# `pak` — Project Awareness Kit (`v2.2.0`)
+# `pak` — Project Awareness Kit (`v2.3.0`)
 
 **Sub-second architectural memory, anti-duplication indexing, cross-microservice contract safety, and blast-radius verification for AI coding agents—with zero background daemons, zero external dependencies, and 30–50% lower LLM token usage.**
 
@@ -223,6 +223,7 @@ See [`examples/pak.config.fullstack.json`](./examples/pak.config.fullstack.json)
 | `agents` | Configured AI ecosystems (`["google", "anthropic", "openai"]`). |
 | `hooks_mode` | Active automated gate mode (`"both"`, `"ai"`, `"git"`, or `"none"`). |
 | `linked_repos` | Relative or absolute paths to sibling microservice repositories for cross-service impact checks. |
+| `test_runners` | Optional `{ "go"\|"ts"\|"py": "<cmd {targets}>" }` overrides for `pak affected --run` (e.g., Docker containers when binaries live outside host `PATH`). |
 | `quarantined_paths` | Dead prototype folders or obsolete SQL dumps excluded from indexing and blocked from edits. |
 | `generated_paths` | Build/codegen directories skipped during symbol indexing (`dist`, `gen`, `sqlc`, `node_modules`). |
 | `codegen_pairs` | `{ "name", "source_regex", "generated_regex", "remedy" }` rules enforcing fresh code generation. |
