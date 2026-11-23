@@ -1,7 +1,7 @@
 # Domain Dossier: Core Architecture & Conventions
 
-> Starter dossier created by `pak` (`project-awareness-kit`).
-> Update this file (or run the `pak-bootstrap` skill on an existing codebase) as workflows, invariants, and corner cases are established. Keep each dossier ≤160 lines.
+> **Paths:** `src/|internal/|cmd/|app/|pkg/`
+> **Summary:** Primary entrypoints, domain invariants, transaction boundaries, and cross-module conventions.
 
 ## 1. Core Workflows & Entrypoints
 - Document primary request/command lifecycles, background jobs, and transaction boundaries here.

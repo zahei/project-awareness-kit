@@ -34,15 +34,16 @@ Lean routing markers       • pak-atlas     (reuse lookup)         • verify_i
                            • pak-bootstrap (1-time audit)           - Optional UUIDv7 & regex rules
                                     │                               - Optional multi-locale i18n parity
                                     ▼                               - Auto-refreshes docs/atlas/*
-                           Living Repo Knowledge
-                           • docs/atlas/*.md   (auto-generated in <0.5s by Python stdlib)
-                           • docs/domains/*.md (concise ≤160-line workflows & corner cases)
+                           Living Repo Knowledge (Self-Evolving)
+                           • docs/atlas/00..04_*.md (symbols, contracts & live reverse-dependent graph)
+                           • docs/domains/*.md      (self-routing ≤160-line workflows & corner cases)
 ```
 
 ### Token Economics
 - **Local Python/Bash Indexers (`build_atlas.py`, `blast_radius.sh`, `verify_impact.sh`):** **0 LLM tokens** (pure local CPU, `<0.5s`, Python 3 stdlib only).
 - **Idle Prompt Overhead:** **~180 tokens/turn** (only the 2-line skill frontmatter descriptions load by default via progressive disclosure).
-- **Silent `Stop` Hooks:** **0 LLM tokens when checks pass**—only wakes the agent up for 1 corrective turn when a real invariant, codegen target, or locale file is broken.
+- **Silent `Stop` Hooks:** **0 LLM tokens when checks pass**—only wakes the agent up for 1 corrective turn when a real invariant, codegen target, locale file, or structural evolution (`docs/domains/*.md` / `dependency-matrix.md`) needs attention.
+- **Self-Evolving Dependency Graph & Domain Routing:** `build_atlas.py` automatically extracts internal import & reverse-dependent graphs (`04_DEPENDENCY_GRAPH.md`) across Go, TS/JS, Python, and Rust on every turn, and auto-discovers any new `docs/domains/<domain>.md` via its `> **Paths:**` header—zero edits to `SKILL.md` or `AGENTS.md` required as new domains emerge.
 
 ---
 

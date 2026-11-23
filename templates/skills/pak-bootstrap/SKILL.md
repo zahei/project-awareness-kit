@@ -4,19 +4,19 @@ description: >-
   One-time onboarding and architecture audit skill. Invoke via /pak-bootstrap (or ask the agent
   to bootstrap PAK) when installing pak into an existing repository or after major architectural
   milestones to audit code vs. stale markdown docs, quarantine dead folders, and generate
-  code-verified docs/domains/*.md dossiers and dependency-matrix.md.
+  self-routing docs/domains/*.md dossiers and dependency-matrix.md.
 ---
 
 # Project Awareness Bootstrap & Stale-Doc Audit (`pak-bootstrap`)
 
 Follow these exact steps to initialize full architectural awareness with minimal token usage:
 
-## Step 1 — Generate the Mechanical Atlas First (`0` LLM Tokens)
-Run the polyglot indexer so 80% of the structural discovery happens locally in Python:
+## Step 1 — Generate the Mechanical Atlas & Dependency Graph First (`0` LLM Tokens)
+Run the polyglot indexer so 80% of the structural & dependency discovery happens locally in Python:
 ```bash
 python3 scripts/pak/build_atlas.py
 ```
-Read `docs/atlas/00_SYSTEM_MAP.md`, `docs/atlas/01_CODE_CAPABILITIES.md`, and `docs/atlas/02_DATA_CONTRACTS.md`.
+Read `docs/atlas/00_SYSTEM_MAP.md`, `docs/atlas/01_CODE_CAPABILITIES.md`, `docs/atlas/02_DATA_CONTRACTS.md`, and `docs/atlas/04_DEPENDENCY_GRAPH.md`.
 
 ## Step 2 — Audit Live Code vs. Stale Docs & Dead Prototype Artifacts
 1. List all `.md` files and top-level directories in the repository.
@@ -26,8 +26,15 @@ Read `docs/atlas/00_SYSTEM_MAP.md`, `docs/atlas/01_CODE_CAPABILITIES.md`, and `d
    - Update or replace stale `.md` instructions so future AI sessions are never misled by outdated docs.
 4. Configure `"codegen_pairs"` and `"checks"` (`enforce_uuid_v7`, `i18n_locales_dir`, `banned_patterns`) in `pak.config.json` to match the repository's real invariants.
 
-## Step 3 — Create Concise, Code-Verified Domain Dossiers (`docs/domains/*.md`)
-Group the application into 3–10 bounded domains. Read the core service/domain files in parallel batches and create `docs/domains/<domain>.md` (**strictly ≤160 lines each**):
+## Step 3 — Create Concise, Self-Routing Domain Dossiers (`docs/domains/*.md`)
+Group the application into 3–10 bounded domains. Read the core service/domain files in parallel batches and create `docs/domains/<domain>.md` (**strictly ≤160 lines each**), starting with dynamic routing headers:
+```markdown
+# Domain Dossier: <Title>
+
+> **Paths:** `<regex_matching_owned_files_or_dirs>`
+> **Summary:** <1-sentence summary of workflows and invariants>
+```
+Include 4 concise sections:
 - **1. End-to-End Workflows & State Machines**
 - **2. Non-Obvious Invariants, Formulas & Thresholds**
 - **3. Corner-Case & Trap Registry** (race conditions, auth/security nuances, caching, timezones, precision)

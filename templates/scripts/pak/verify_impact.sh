@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ==============================================================================
-# pak — Multi-Vendor Deterministic Impact & Invariant Verifier
+# pak — Multi-Vendor Deterministic Impact, Dependency & Evolution Verifier
 #
 # Modes:
 #   1. CLI / Git Hook:   `bash scripts/pak/verify_impact.sh`
@@ -29,6 +29,7 @@ fi
 
 exec python3 - "$MODE" "$PAYLOAD" << 'PY'
 import json
+import os
 import re
 import subprocess
 import sys
@@ -36,6 +37,9 @@ from pathlib import Path
 
 mode = sys.argv[1]
 raw_payload = sys.argv[2]
+strict_docs = os.environ.get("PAK_STRICT_DOCS", "0") == "1"
+ack_no_doc = os.environ.get("PAK_ACK_NO_DOC_IMPACT", "0") == "1"
+
 
 def allow_and_exit() -> None:
     if mode == "agy":
@@ -44,9 +48,10 @@ def allow_and_exit() -> None:
         print("{}")
     sys.exit(0)
 
+
 def block_and_exit(errors: list[str]) -> None:
     joined = " | ".join(errors)
-    msg = f"[pak impact gate] Fix before finishing: {joined}"
+    msg = f"[pak impact & evolution gate] Fix before finishing: {joined}"
     if mode == "agy":
         print(json.dumps({"decision": "continue", "reason": msg}))
         sys.exit(0)
@@ -58,6 +63,7 @@ def block_and_exit(errors: list[str]) -> None:
         for err in errors:
             print(f"  - {err}")
         sys.exit(1)
+
 
 # 1. Loop-prevention guards for Google Antigravity and Anthropic Claude Code Stop hooks
 if raw_payload.strip():
@@ -76,14 +82,16 @@ if raw_payload.strip():
 
 # 2. Check git dirty files (if clean in hook mode, exit immediately with 0 cost)
 try:
-    proc = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, check=False)
-    changed_files = [
-        line[3:].strip().split(" -> ")[-1]
-        for line in proc.stdout.splitlines()
-        if len(line) > 3
+    proc = subprocess.run(["git", "status", "--porcelain", "-uall"], capture_output=True, text=True, check=False)
+    status_lines = [ln for ln in proc.stdout.splitlines() if len(ln) > 3]
+    changed_files = [ln[3:].strip().split(" -> ")[-1] for ln in status_lines]
+    added_files = [
+        ln[3:].strip().split(" -> ")[-1]
+        for ln in status_lines
+        if ln[:2].strip() in ("??", "A", "AM")
     ]
 except Exception:
-    changed_files = []
+    changed_files, added_files = [], []
 
 if mode in ("agy", "claude") and not changed_files:
     allow_and_exit()
@@ -127,8 +135,7 @@ if checks.get("enforce_uuid_v7", False):
         if not p.exists() or not p.is_file() or "uuidutil" in f or "test" in f.lower():
             continue
         if p.suffix in (".go", ".ts", ".tsx", ".js", ".py", ".rs"):
-            txt = p.read_text(encoding="utf-8", errors="replace")
-            if uuid_v4_rx.search(txt):
+            if uuid_v4_rx.search(p.read_text(encoding="utf-8", errors="replace")):
                 errors.append(f"UUIDv4 call detected in '{f}' (project enforces time-ordered UUIDv7).")
 
 # 6. Custom Banned Patterns from pak.config.json
@@ -172,16 +179,61 @@ if locales_dir_str:
         if i18n_issues:
             errors.append("i18n parity check failed: " + "; ".join(i18n_issues))
 
-# 8. Auto-refresh Codebase Atlas so docs/atlas/* never goes stale
+# 8. Auto-refresh Codebase Atlas & Live Dependency Graph BEFORE checking structural drift
 atlas_script = Path("scripts/pak/build_atlas.py")
 if atlas_script.exists():
     subprocess.run([sys.executable, str(atlas_script), "--quiet"], check=False)
+
+# 9. Self-Evolving Architecture Gate: Ensure structural/dependency evolution syncs docs/domains/ & dependency-matrix.md
+docs_updated = any(
+    f.startswith("docs/domains/") or f.endswith("dependency-matrix.md")
+    for f in changed_files
+)
+if not docs_updated and not ack_no_doc:
+    gen_prefixes = [p.strip("/") for p in cfg.get("generated_paths", []) if p.strip("/")]
+    triggers = []
+
+    for f in changed_files:
+        if any(f == gp or f.startswith(gp + "/") for gp in gen_prefixes):
+            continue
+        if re.search(r"(\.proto|\.prisma|\.graphql|\.gql|migrations/.*\.sql|schema\.sql)$", f):
+            triggers.append(f"schema/contract modified ({f})")
+
+    for f in added_files:
+        if any(f == gp or f.startswith(gp + "/") for gp in gen_prefixes):
+            continue
+        if f.startswith(("scripts/pak/", "docs/", ".agents/", ".claude/")):
+            continue
+        if any(tok in f.lower() for tok in ("_test.", ".test.", ".spec.", "/locales/")):
+            continue
+        if Path(f).suffix in (".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".rs"):
+            triggers.append(f"new source module ({f})")
+
+    dep_file = "docs/atlas/04_DEPENDENCY_GRAPH.md"
+    cat_proc = subprocess.run(["git", "cat-file", "-e", f"HEAD:{dep_file}"], capture_output=True, check=False)
+    if cat_proc.returncode == 0:
+        diff_proc = subprocess.run(["git", "diff", "-U0", "HEAD", "--", dep_file], capture_output=True, text=True, check=False)
+        added_edges = [ln[1:].strip() for ln in diff_proc.stdout.splitlines() if ln.startswith("+- `")]
+        if added_edges:
+            triggers.append(f"new module dependency ({added_edges[0][:80]})")
+
+    if triggers:
+        evo_msg = (
+            f"Structural/dependency evolution detected [{', '.join(triggers[:4])}], "
+            "but neither 'docs/domains/*.md' nor 'dependency-matrix.md' was updated. "
+            "Update the affected dossier(s) (or create a new docs/domains/<domain>.md with Paths/Summary headers if a new domain was added) "
+            "and dependency-matrix.md if workflows/couplings changed."
+        )
+        if mode in ("agy", "claude") or strict_docs:
+            errors.append(evo_msg)
+        else:
+            print(f"[pak:check] NOTE: {evo_msg}")
 
 if errors:
     block_and_exit(errors)
 
 if mode == "cli":
-    print("[pak:check] OK — All architectural invariants, codegen pairs, and Atlas indexes verified.")
+    print("[pak:check] OK — All architectural invariants, dependency graphs, codegen pairs, and Atlas indexes verified.")
 else:
     allow_and_exit()
 PY

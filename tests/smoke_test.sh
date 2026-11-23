@@ -11,7 +11,7 @@ KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_BASE="$(mktemp -d)"
 trap 'rm -rf "$TMP_BASE"' EXIT
 
-echo "==> [1/5] Testing non-interactive install into simulated polyglot repo (all agents + hooks)..."
+echo "==> [1/6] Testing non-interactive install into simulated polyglot repo (all agents + hooks)..."
 PROJ="$TMP_BASE/sample-app"
 mkdir -p "$PROJ/internal/service" "$PROJ/proto" "$PROJ/web/src/locales"
 (
@@ -44,7 +44,7 @@ EOF
 
 python3 "$KIT_DIR/pak" init "$PROJ" --yes --agents all --stage existing --hooks both --uuid-v7 --i18n-dir "web/src/locales"
 
-echo "==> [2/5] Verifying generated multi-vendor files & non-destructive merge..."
+echo "==> [2/6] Verifying generated multi-vendor files & non-destructive merge..."
 grep -q "Keep existing custom rule." "$PROJ/AGENTS.md"
 grep -q "PAK:START" "$PROJ/AGENTS.md"
 test -f "$PROJ/GEMINI.md"
@@ -57,7 +57,7 @@ test -L "$PROJ/.claude/skills/pak-atlas" || test -d "$PROJ/.claude/skills/pak-at
 grep -q "CalculateTotal" "$PROJ/docs/atlas/01_CODE_CAPABILITIES.md"
 grep -q "BillingService.CreateInvoice" "$PROJ/docs/atlas/02_DATA_CONTRACTS.md"
 
-echo "==> [3/5] Verifying 'pak trace' and clean 'pak check'..."
+echo "==> [3/6] Verifying 'pak trace' and clean 'pak check'..."
 python3 "$KIT_DIR/pak" trace "CalculateTotal" "$PROJ" | grep -q "billing.go"
 python3 "$KIT_DIR/pak" check "$PROJ" | grep -q "OK"
 
@@ -74,7 +74,7 @@ AGY_CLEAN="$(echo '{"terminationReason":"NO_TOOL_CALL","continuationActive":fals
 CLAUDE_CLEAN="$(echo '{"stop_hook_active":false}' | bash "$PROJ/scripts/pak/verify_impact.sh" --claude-hook)"
 [ "$CLAUDE_CLEAN" = '{}' ]
 
-echo "==> [4/5] Verifying violation blocking (i18n drift + UUIDv4 + Proto codegen drift)..."
+echo "==> [4/6] Verifying violation blocking (i18n drift + UUIDv4 + Proto codegen drift)..."
 echo '{"app.title": "Salut"}' > "$PROJ/web/src/locales/ro.json"
 echo '// edit' >> "$PROJ/proto/billing.proto"
 cat >> "$PROJ/internal/service/billing.go" << 'EOF'
@@ -97,7 +97,36 @@ AGY_LOOP_GUARD="$(echo '{"terminationReason":"NO_TOOL_CALL","continuationActive"
 CLAUDE_LOOP_GUARD="$(echo '{"stop_hook_active":true}' | bash "$PROJ/scripts/pak/verify_impact.sh" --claude-hook)"
 [ "$CLAUDE_LOOP_GUARD" = '{}' ]
 
-echo "==> [5/5] Verifying clean 'pak uninstall'..."
+echo "==> [5/6] Verifying self-evolving dependency graph, dynamic new-domain routing & structural evolution gate..."
+(
+    cd "$PROJ"
+    git checkout -- .
+    mkdir -p internal/payments
+    cat > internal/payments/stripe.go << 'EOF'
+package payments
+
+func ChargeCard() error { return nil }
+EOF
+)
+# Structural evolution (new Go module added without docs/domains/ update) must trigger Stop gate once:
+EVO_BLOCK="$(echo '{"terminationReason":"NO_TOOL_CALL","continuationActive":false}' | bash "$PROJ/scripts/pak/verify_impact.sh" --agy-hook)"
+echo "$EVO_BLOCK" | grep -q "Structural/dependency evolution detected"
+
+# Adding a self-routing domain dossier satisfies the gate AND auto-registers in 00_SYSTEM_MAP.md & blast_radius.sh:
+cat > "$PROJ/docs/domains/payments.md" << 'EOF'
+# Domain Dossier: Payments
+
+> **Paths:** `internal/payments/`
+> **Summary:** Card charging and Stripe webhook idempotency.
+EOF
+
+EVO_PASS="$(echo '{"terminationReason":"NO_TOOL_CALL","continuationActive":false}' | bash "$PROJ/scripts/pak/verify_impact.sh" --agy-hook)"
+[ "$EVO_PASS" = '{"decision": "allow"}' ]
+test -f "$PROJ/docs/atlas/04_DEPENDENCY_GRAPH.md"
+grep -q "docs/domains/payments.md" "$PROJ/docs/atlas/00_SYSTEM_MAP.md"
+python3 "$KIT_DIR/pak" trace "ChargeCard" "$PROJ" | grep -q "docs/domains/payments.md"
+
+echo "==> [6/6] Verifying clean 'pak uninstall'..."
 python3 "$KIT_DIR/pak" uninstall "$PROJ"
 grep -q "Keep existing custom rule." "$PROJ/AGENTS.md"
 ! grep -q "PAK:START" "$PROJ/AGENTS.md"

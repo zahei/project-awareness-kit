@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ==============================================================================
-# pak — Zero-Token Blast Radius & Reuse Tracer (`scripts/pak/blast_radius.sh`)
+# pak — Zero-Token Blast Radius, Dependency & Dynamic Domain Tracer
 # Usage: bash scripts/pak/blast_radius.sh "<symbol|table|rpc|component>"
 # ==============================================================================
 
@@ -15,12 +15,12 @@ if [ -z "$QUERY" ]; then
     exit 1
 fi
 
-if [ ! -f "docs/atlas/01_CODE_CAPABILITIES.md" ]; then
+if [ ! -f "docs/atlas/04_DEPENDENCY_GRAPH.md" ]; then
     python3 scripts/pak/build_atlas.py --quiet
 fi
 
-echo "=== 1. REUSE CATALOG MATCHES (docs/atlas/) ==="
-grep -rn -i -E "$QUERY" docs/atlas/ 2>/dev/null | head -n 30 || echo "  (none)"
+echo "=== 1. REUSE CATALOG & DEPENDENCY GRAPH MATCHES (docs/atlas/) ==="
+grep -rn -i -E "$QUERY" docs/atlas/ 2>/dev/null | head -n 35 || echo "  (none)"
 
 echo ""
 echo "=== 2. SOURCE CODE DEFINITIONS & CALLERS ==="
@@ -47,7 +47,7 @@ skip_prefixes = [p.strip("/") for p in cfg.get("quarantined_paths", []) + cfg.ge
 code_exts = {".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".rs", ".java", ".kt", ".cs", ".rb", ".php"}
 schema_exts = {".sql", ".proto", ".prisma", ".graphql", ".gql", ".yaml", ".yml"}
 
-code_hits, schema_hits = [], []
+code_hits, schema_hits, matched_files = [], [], set()
 
 for dirpath, dirnames, filenames in os.walk("."):
     rel_dir = dirpath.lstrip("./")
@@ -67,6 +67,7 @@ for dirpath, dirnames, filenames in os.walk("."):
         try:
             for idx, line in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
                 if rx.search(line):
+                    matched_files.add(r)
                     entry = f"{r}:{idx}: {line.strip()[:140]}"
                     if ext in code_exts:
                         code_hits.append(entry)
@@ -86,11 +87,32 @@ for h in schema_hits[:25]:
 if not schema_hits:
     print("  (none)")
 
-print("\n=== 4. DOMAIN DOSSIERS IN docs/domains/ ===")
+print("\n=== 4. RECOMMENDED DOMAIN DOSSIERS (Dynamic Discovery via Paths Header) ===")
 domains_dir = Path("docs/domains")
+paths_re = re.compile(r"^>\s*\*\*Paths:\*\*\s*`?([^`\n]+)`?", re.IGNORECASE)
 if domains_dir.exists():
     dossiers = sorted(domains_dir.glob("*.md"))
-    matched = [d.as_posix() for d in dossiers if rx.search(d.read_text(encoding="utf-8", errors="replace")) or rx.search(d.stem)]
+    matched = []
+    for d in dossiers:
+        txt = d.read_text(encoding="utf-8", errors="replace")
+        pat_str = ""
+        for ln in txt.splitlines()[:12]:
+            m = paths_re.match(ln.strip())
+            if m:
+                pat_str = m.group(1).strip()
+                break
+        hit = False
+        if pat_str:
+            try:
+                p_rx = re.compile(pat_str, re.IGNORECASE)
+                if any(p_rx.search(f) for f in matched_files) or p_rx.search(query):
+                    hit = True
+            except re.error:
+                pass
+        if not hit and (rx.search(txt) or rx.search(d.stem)):
+            hit = True
+        if hit:
+            matched.append(d.as_posix())
     target_list = matched if matched else [d.as_posix() for d in dossiers]
     for d in target_list[:10]:
         print(f"  - {d}")
