@@ -2,14 +2,14 @@
 set -euo pipefail
 
 # ==============================================================================
-# pak — Multi-Vendor Deterministic Impact, Dependency & Evolution Verifier
+# pak v2.0 — Multi-Vendor Deterministic Impact, Contract, Duplicate & Evolution Gate
 #
 # Modes:
 #   1. CLI / Git Hook:   `bash scripts/pak/verify_impact.sh`
 #   2. Google AGY Hook:  `bash scripts/pak/verify_impact.sh --agy-hook`
 #   3. Claude Code Hook: `bash scripts/pak/verify_impact.sh --claude-hook`
 #
-# Consumes 0 LLM tokens when checks pass!
+# Runs in <300ms locally using `.pak/index.sqlite` and consumes 0 LLM tokens when clean!
 # ==============================================================================
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -31,6 +31,7 @@ exec python3 - "$MODE" "$PAYLOAD" << 'PY'
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -39,6 +40,25 @@ mode = sys.argv[1]
 raw_payload = sys.argv[2]
 strict_docs = os.environ.get("PAK_STRICT_DOCS", "0") == "1"
 ack_no_doc = os.environ.get("PAK_ACK_NO_DOC_IMPACT", "0") == "1"
+allow_breaking = os.environ.get("PAK_ALLOW_BREAKING", "0") == "1"
+allow_duplicate = os.environ.get("PAK_ALLOW_DUPLICATE", "0") == "1"
+
+STEM_SYNONYMS = {
+    "fetch": "get", "load": "get", "retrieve": "get", "read": "get", "query": "get", "find": "get",
+    "calc": "compute", "calculate": "compute",
+    "fmt": "format", "render": "format",
+    "parse": "decode", "unmarshal": "decode",
+    "marshal": "encode", "serialize": "encode",
+    "build": "create", "make": "create", "generate": "create",
+    "remove": "delete", "destroy": "delete", "erase": "delete",
+}
+
+
+def normalize_stem(name: str) -> str:
+    s = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name)
+    s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", s)
+    tokens = [t.lower() for t in re.split(r"[_\W]+", s) if t]
+    return "_".join(STEM_SYNONYMS.get(t, t) for t in tokens)
 
 
 def allow_and_exit() -> None:
@@ -51,7 +71,7 @@ def allow_and_exit() -> None:
 
 def block_and_exit(errors: list[str]) -> None:
     joined = " | ".join(errors)
-    msg = f"[pak impact & evolution gate] Fix before finishing: {joined}"
+    msg = f"[pak v2.0 gate] Fix before finishing: {joined}"
     if mode == "agy":
         print(json.dumps({"decision": "continue", "reason": msg}))
         sys.exit(0)
@@ -105,6 +125,7 @@ if cfg_path.exists():
         block_and_exit([f"Invalid JSON in pak.config.json: {exc}"])
 
 errors: list[str] = []
+advisories: list[str] = []
 
 # 3. Quarantined Dead-Path Guard
 for q in cfg.get("quarantined_paths", []):
@@ -138,7 +159,7 @@ if checks.get("enforce_uuid_v7", False):
             if uuid_v4_rx.search(p.read_text(encoding="utf-8", errors="replace")):
                 errors.append(f"UUIDv4 call detected in '{f}' (project enforces time-ordered UUIDv7).")
 
-# 6. Custom Banned Patterns from pak.config.json
+# 6. Custom Banned Patterns
 for rule in checks.get("banned_patterns", []):
     pat = rule.get("regex", "")
     file_rx = rule.get("path_regex", ".*")
@@ -179,12 +200,147 @@ if locales_dir_str:
         if i18n_issues:
             errors.append("i18n parity check failed: " + "; ".join(i18n_issues))
 
-# 8. Auto-refresh Codebase Atlas & Live Dependency Graph BEFORE checking structural drift
+# 8. Wire-Breaking Contract & Destructive Migration Diff Guard (`detect_breaking_contracts`)
+if checks.get("detect_breaking_contracts", True) and not allow_breaking:
+    proto_field_re = re.compile(r"^\s*(?:repeated\s+|optional\s+)?[A-Za-z0-9_.]+\s+([A-Za-z0-9_]+)\s*=\s*([0-9]+)\s*;")
+    proto_rpc_re = re.compile(r"^\s*rpc\s+([A-Za-z0-9_]+)\s*\(")
+    for f in changed_files:
+        if f.endswith(".proto") and Path(f).exists():
+            diff = subprocess.run(["git", "diff", "-U0", "HEAD", "--", f], capture_output=True, text=True, check=False).stdout
+            removed_tags: dict[str, str] = {}
+            added_tags: dict[str, str] = {}
+            removed_rpcs: set[str] = set()
+            added_rpcs: set[str] = set()
+            full_txt = Path(f).read_text(encoding="utf-8", errors="replace")
+            for ln in diff.splitlines():
+                if ln.startswith("---") or ln.startswith("+++"):
+                    continue
+                if ln.startswith("-"):
+                    body = ln[1:]
+                    mf = proto_field_re.match(body)
+                    if mf:
+                        removed_tags[mf.group(2)] = mf.group(1)
+                    mr = proto_rpc_re.match(body)
+                    if mr:
+                        removed_rpcs.add(mr.group(1))
+                elif ln.startswith("+"):
+                    body = ln[1:]
+                    mf = proto_field_re.match(body)
+                    if mf:
+                        added_tags[mf.group(2)] = mf.group(1)
+                    mr = proto_rpc_re.match(body)
+                    if mr:
+                        added_rpcs.add(mr.group(1))
+            for tag, old_name in removed_tags.items():
+                if tag in added_tags and added_tags[tag] != old_name:
+                    errors.append(
+                        f"Wire-breaking Protobuf change in '{f}': field tag ={tag} reassigned from '{old_name}' to '{added_tags[tag]}' (set PAK_ALLOW_BREAKING=1 if intentional)."
+                    )
+                elif tag not in added_tags and not re.search(rf"\breserved\b[^;]*\b{tag}\b", full_txt):
+                    errors.append(
+                        f"Wire-breaking Protobuf change in '{f}': field '{old_name} = {tag}' removed without `reserved {tag};` (set PAK_ALLOW_BREAKING=1 if intentional)."
+                    )
+            for rpc in sorted(removed_rpcs - added_rpcs):
+                errors.append(
+                    f"Wire-breaking Protobuf change in '{f}': RPC '{rpc}' deleted (deprecate instead or set PAK_ALLOW_BREAKING=1)."
+                )
+
+        if re.search(r"migrations/.*\.sql$", f) and Path(f).exists():
+            sql_txt = Path(f).read_text(encoding="utf-8", errors="replace")
+            if "pak:allow-destructive" not in sql_txt:
+                up_part = sql_txt.split("-- +goose Down")[0]
+                if re.search(r"\b(DROP\s+COLUMN|ALTER\s+COLUMN\s+\S+\s+TYPE)\b", up_part, re.IGNORECASE):
+                    errors.append(
+                        f"Destructive SQL migration detected in '{f}' (DROP COLUMN / ALTER COLUMN TYPE). Add '-- pak:allow-destructive' or set PAK_ALLOW_BREAKING=1 if verified safe."
+                    )
+
+# 9. Refresh Incremental SQLite Index & Atlas Files
 atlas_script = Path("scripts/pak/build_atlas.py")
 if atlas_script.exists():
     subprocess.run([sys.executable, str(atlas_script), "--quiet"], check=False)
 
-# 9. Self-Evolving Architecture Gate: Ensure structural/dependency evolution syncs docs/domains/ & dependency-matrix.md
+# 10. Mechanical Near-Duplicate Function Detector (`detect_duplicate_symbols`)
+db_path = Path(".pak/index.sqlite")
+if checks.get("detect_duplicate_symbols", True) and not allow_duplicate and db_path.exists():
+    new_fn_patterns = [
+        re.compile(r"^\+func\s+([A-Z][A-Za-z0-9_]*)\s*\("),  # Top-level Go exported functions (excluding receiver methods)
+        re.compile(r"^\+export\s+(?:async\s+)?function\s+([A-Za-z0-9_]+)\s*\("),
+        re.compile(r"^\+export\s+const\s+([A-Za-z0-9_]+)\s*=\s*(?:async\s*)?\("),
+        re.compile(r"^\+(?:async\s+)?def\s+([a-zA-Z][a-zA-Z0-9_]*)\s*\("),
+        re.compile(r"^\+\s*pub\s+(?:async\s+)?fn\s+([a-zA-Z0-9_]+)\s*\("),
+    ]
+    newly_defined: list[tuple[str, str]] = []
+    for f in changed_files:
+        if any(tok in f.lower() for tok in ("_test.", ".test.", ".spec.", "mock", "/gen/", "/sqlc/")):
+            continue
+        p = Path(f)
+        if not p.exists() or not p.is_file() or p.suffix not in (".go", ".ts", ".tsx", ".js", ".py", ".rs"):
+            continue
+        if f in added_files:
+            diff_lines = ["+" + ln for ln in p.read_text(encoding="utf-8", errors="replace").splitlines()]
+        else:
+            diff = subprocess.run(["git", "diff", "-U0", "HEAD", "--", f], capture_output=True, text=True, check=False).stdout
+            diff_lines = [ln for ln in diff.splitlines() if ln.startswith("+") and not ln.startswith("+++")]
+        for ln in diff_lines:
+            for rx in new_fn_patterns:
+                m = rx.match(ln)
+                if m:
+                    fname = m.group(1)
+                    if fname.lower() not in ("main", "init", "setup", "close", "String", "Error"):
+                        newly_defined.append((f, fname))
+
+    if newly_defined:
+        conn = sqlite3.connect(str(db_path))
+        for src_f, fname in newly_defined:
+            stem = normalize_stem(fname)
+            if len(stem) < 8 or "_" not in stem:
+                continue
+            matches = conn.execute(
+                "SELECT path, line, name, signature FROM symbols WHERE norm_stem = ? AND path != ? AND kind NOT IN ('iface_method', 'method') LIMIT 3",
+                (stem, src_f),
+            ).fetchall()
+            if matches:
+                other_path, other_line, other_name, _ = matches[0]
+                dup_msg = (
+                    f"Potential duplicate function '{fname}' added in '{src_f}' — similar capability '{other_name}' "
+                    f"already exists at '{other_path}:L{other_line}'. Reuse/extend it, or set PAK_ALLOW_DUPLICATE=1 if distinct."
+                )
+                if mode in ("agy", "claude"):
+                    errors.append(dup_msg)
+                else:
+                    advisories.append(dup_msg)
+        conn.close()
+
+# 11. Federated Multi-Microservice Consumer Check (`linked_repos`)
+linked_repos = cfg.get("linked_repos", [])
+local_manifest_path = Path("docs/atlas/contracts.json")
+if linked_repos and local_manifest_path.exists() and changed_files:
+    local_manifest = json.loads(local_manifest_path.read_text(encoding="utf-8"))
+    touched_set = set(changed_files)
+    modified_endpoints = {
+        item["endpoint"]
+        for item in local_manifest.get("provides", [])
+        if item.get("path") in touched_set and item.get("endpoint")
+    }
+    if modified_endpoints:
+        cross_impacts = []
+        for lr in linked_repos:
+            lr_manifest_file = Path(lr).resolve() / "docs" / "atlas" / "contracts.json"
+            if not lr_manifest_file.exists():
+                continue
+            try:
+                sib = json.loads(lr_manifest_file.read_text(encoding="utf-8"))
+                sib_name = sib.get("service", Path(lr).name)
+                for cons in sib.get("consumes", []):
+                    ep = cons.get("endpoint", "")
+                    if ep in modified_endpoints:
+                        cross_impacts.append(f"{sib_name} consumes '{ep}' at {lr}/{cons.get('path')}:L{cons.get('line')}")
+            except Exception:
+                pass
+        if cross_impacts:
+            advisories.append("Cross-microservice consumers affected: " + "; ".join(cross_impacts[:5]))
+
+# 12. Self-Evolving Architecture Gate: Ensure structural/dependency evolution syncs docs/domains/ & dependency-matrix.md
 docs_updated = any(
     f.startswith("docs/domains/") or f.endswith("dependency-matrix.md")
     for f in changed_files
@@ -202,7 +358,7 @@ if not docs_updated and not ack_no_doc:
     for f in added_files:
         if any(f == gp or f.startswith(gp + "/") for gp in gen_prefixes):
             continue
-        if f.startswith(("scripts/pak/", "docs/", ".agents/", ".claude/")):
+        if f.startswith(("scripts/pak/", "docs/", ".agents/", ".claude/", ".pak/")):
             continue
         if any(tok in f.lower() for tok in ("_test.", ".test.", ".spec.", "/locales/")):
             continue
@@ -227,13 +383,17 @@ if not docs_updated and not ack_no_doc:
         if mode in ("agy", "claude") or strict_docs:
             errors.append(evo_msg)
         else:
-            print(f"[pak:check] NOTE: {evo_msg}")
+            advisories.append(evo_msg)
 
 if errors:
+    if advisories:
+        errors.extend(advisories[:2])
     block_and_exit(errors)
 
 if mode == "cli":
-    print("[pak:check] OK — All architectural invariants, dependency graphs, codegen pairs, and Atlas indexes verified.")
+    for adv in advisories:
+        print(f"[pak:check] NOTE: {adv}")
+    print("[pak:check] OK — All architectural invariants, contracts, duplicate checks, dependency graphs, and SQLite Atlas verified.")
 else:
     allow_and_exit()
 PY

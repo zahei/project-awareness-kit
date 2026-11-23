@@ -1,167 +1,230 @@
-# `pak` — Project Awareness Kit
+# `pak` — Project Awareness Kit (`v2.0`)
 
-**Keep AI coding agents aware of every existing function, cross-layer side effect, and subtle corner case as your codebase grows—while cutting token spend by 30–50%.**
+**Sub-second architectural memory, anti-duplication indexing, cross-microservice contract safety, and blast-radius verification for AI coding agents—with zero background daemons, zero external dependencies, and 30–50% lower LLM token usage.**
 
-`pak` (`project-awareness-kit`) is a zero-dependency, vendor-neutral architecture & memory layer that works seamlessly across **Google**, **Anthropic**, and **OpenAI** CLI & AI IDEs:
+`pak` (`project-awareness-kit`) bridges **Google**, **Anthropic**, and **OpenAI** CLI & IDE agents through a unified, self-evolving repository intelligence layer:
 
-| Ecosystem | Supported Tools | What `pak` Configures Automatically |
+| AI Ecosystem | Supported CLI / IDEs | Native Files Configured by `pak init` |
 | :--- | :--- | :--- |
 | **Google** | **Antigravity (`agy` CLI & IDE)**, **Gemini CLI** | `AGENTS.md`, `GEMINI.md`, `.agents/skills/pak-*`, `.agents/hooks.json` (`Stop` gate) |
 | **Anthropic** | **Claude Code (`claude` CLI & IDE)** | `CLAUDE.md`, `.claude/skills/pak-*`, `.claude/settings.json` (`hooks.Stop` gate) |
-| **OpenAI & Open Standard** | **Codex CLI (`codex`)**, **Cursor**, **Windsurf** | `AGENTS.md`, `.agents/skills/pak-*/agents/openai.yaml`, `.git/hooks/pre-commit` |
+| **OpenAI & Standard** | **Codex CLI (`codex`)**, **Cursor**, **Windsurf** | `AGENTS.md`, `.agents/skills/pak-*/agents/openai.yaml`, `.git/hooks/pre-commit` |
 
 ---
 
-## Why Projects Need `pak` as They Scale
+## Table of Contents
 
-As applications grow past a few thousand lines of code, AI agents hit four predictable failure modes:
-1. **$O(N^2)$ Token Burn:** Every tool-call turn re-sends the entire conversation history. Without a fast symbol map, an agent spends 12–20 exploratory turns grepping and reading 800-line files—burning 1M+ input tokens on routine features.
-2. **Duplicate Functions & Components:** Unaware of existing helpers, SQL queries, or UI primitives, agents write near-duplicate utilities in new files.
-3. **Missed Cross-Layer Ripple Effects:** Changing a database column, RPC message, or state machine silently breaks background workers, caches, notifications, or locale catalogs.
-4. **Lost Corner Cases & Stale Markdown Traps:** Stuffing everything into `AGENTS.md` hits token caps and dilutes model attention, while outdated prototype `.md` files actively mislead future sessions.
+1. [The Core Problem: Why AI Agents Break Complex Codebases](#1-the-core-problem-why-ai-agents-break-complex-codebases)
+2. [Design Philosophy & Token / Latency Economics](#2-design-philosophy--token--latency-economics)
+3. [How `pak` Works Under the Hood (Architecture & Logic)](#3-how-pak-works-under-the-hood-architecture--logic)
+   - [Layer 1: Lean Constitution + Progressive-Disclosure Skills](#layer-1-lean-constitution--progressive-disclosure-skills)
+   - [Layer 2: Incremental SQLite + FTS5 Symbol & Dependency Engine](#layer-2-incremental-sqlite--fts5-symbol--dependency-engine)
+   - [Layer 3: Self-Routing Domain Dossiers (`docs/domains/*.md`)](#layer-3-self-routing-domain-dossiers-docsdomainsmd)
+   - [Layer 4: Hidden Git Co-Change Mining (`git log` Probability)](#layer-4-hidden-git-co-change-mining-git-log-probability)
+   - [Layer 5: Multi-Repo Microservice & Event-Bus Federation](#layer-5-multi-repo-microservice--event-bus-federation)
+   - [Layer 6: Multi-Vendor `Stop` Gate, Wire-Breaking & Duplicate Guards](#layer-6-multi-vendor-stop-gate-wire-breaking--duplicate-guards)
+   - [Layer 7: Graph-Driven Affected-Only Test Runner (`pak affected`)](#layer-7-graph-driven-affected-only-test-runner-pak-affected)
+4. [Installation & Quickstart](#4-installation--quickstart)
+5. [Onboarding Workflows: Greenfield vs. Existing Complex Codebases](#5-onboarding-workflows-greenfield-vs-existing-complex-codebases)
+6. [Complete CLI Reference](#6-complete-cli-reference)
+7. [Configuration Reference (`pak.config.json` & Environment Flags)](#7-configuration-reference-pakconfigjson--environment-flags)
+8. [Testing & Uninstalling](#8-testing--uninstalling)
 
 ---
 
-## How `pak` Solves This (With Zero Idle Token Tax)
+## 1. The Core Problem: Why AI Agents Break Complex Codebases
+
+When an application scales past ~20k–500k+ lines of code—or splits across multiple microservices—standard AI agent setups break down in five predictable ways:
+
+1. **$O(N^2)$ Exploratory Token Burn:** Every tool-call turn re-sends the entire conversation history to the model. Without a compact capability index, an agent spends 12–20 turns grepping and reading 800-line files just to understand existing signatures—burning 1M–2M+ input tokens on a medium feature.
+2. **Silent Function & Component Duplication:** Unaware that `FormatAccountCurrency()` or `<NumericInput />` already exists in another package, the agent writes `RenderAccountCurrency()` from scratch.
+3. **Missed Cross-Layer & Cross-Microservice Ripple Effects:** Editing a Protobuf message, REST route, SQL table, or Kafka/NATS/CustomEvent topic inside `billing-service` silently breaks downstream consumers in background workers, frontend tabs, or sibling microservice repos (`notification-worker`, `web-portal`).
+4. **Forgotten Corner Cases & Stale Markdown Traps:** Stuffing all documentation into `AGENTS.md` hits token caps and dilutes attention ("lost in the middle"), while old prototype `.md` files and dead folders left in the repo actively trick agents into following obsolete patterns.
+5. **Slow Verification Loops:** Heavy Spec-Driven frameworks add 6-stage LLM ceremonies before writing a single line of code, while running full test suites on every edit adds 10–30 minutes of waiting.
+
+---
+
+## 2. Design Philosophy & Token / Latency Economics
+
+`pak` is engineered around four strict constraints:
+- **Zero Background Daemons (`0 MB` idle RAM):** No resident LSP servers, Docker containers, or vector databases.
+- **Zero External Dependencies:** Pure **Python 3 standard library** (`sqlite3` + `FTS5`, `re`, `json`, `subprocess`) + `bash` + `git`. Works offline on any Linux, macOS, or WSL machine.
+- **Sub-Second Execution (`<300ms`):** Incremental SQLite indexing caches parsed AST/regex metadata by `(mtime_ns, size)` so warm runs on massive repos re-parse `0` unchanged files in `<25ms`.
+- **Zero Idle LLM Token Tax:** Local scripts run on your CPU (`0` LLM tokens). Progressive-disclosure skills inject only ~180 tokens of YAML frontmatter until needed, and `Stop` hooks emit `allow` silently (`0` extra LLM turns) whenever checks pass.
 
 ```text
-Always-On (<1 KB)          Progressive Context (On-Demand)        Zero-Token Local Enforcement
-─────────────────          ───────────────────────────────        ────────────────────────────
-AGENTS.md / CLAUDE.md ───► Skills (.agents/ & .claude/skills) ──► Stop & Git Hooks (0 LLM tokens!)
-Lean routing markers       • pak-atlas     (reuse lookup)         • verify_impact.sh
-(non-destructive merge)    • pak-impact    (blast radius)           - Quarantined dead-path guard
-                           • pak-domains   (corner cases)           - Codegen sync (proto/sqlc/prisma)
-                           • pak-bootstrap (1-time audit)           - Optional UUIDv7 & regex rules
-                                    │                               - Optional multi-locale i18n parity
-                                    ▼                               - Auto-refreshes docs/atlas/00..04
-                           Living Repo Knowledge (Self-Evolving)    - Structural-evolution dossier gate
-                           • docs/atlas/00..04_*.md (symbols, contracts & live reverse-dependent graph)
-                           • docs/domains/*.md      (self-routing ≤160-line workflows & corner cases)
+Always-On (<1 KB)            On-Demand Progressive Context             Sub-Second Local CPU Gates (<300ms)
+─────────────────            ─────────────────────────────             ───────────────────────────────────
+AGENTS.md / CLAUDE.md  ───►  Skills (.agents/ & .claude/skills)  ───►  verify_impact.sh (AGY / Claude / Git)
+Non-destructive markers      • pak-atlas     (reuse before coding)     1. Quarantined dead-path guard
+                             • pak-impact    (full blast radius)       2. Codegen freshness (proto/sqlc/prisma)
+                             • pak-domains   (corner-case memory)      3. Wire-breaking Proto/SQL diff guard
+                             • pak-bootstrap (1-time brownfield)       4. Mechanical duplicate-symbol detector
+                                      │                                5. Multi-locale i18n key parity
+                                      ▼                                6. Cross-microservice consumer warning
+                             Incremental SQLite + Living Docs          7. Structural-evolution dossier gate
+                             • .pak/index.sqlite  (FTS5 + graph)
+                             • docs/atlas/00..05  (auto-generated)
+                             • docs/atlas/contracts.json (federation)
+                             • docs/domains/*.md  (self-routing specs)
 ```
-
-### Token Economics
-- **Local Python/Bash Indexers (`build_atlas.py`, `blast_radius.sh`, `verify_impact.sh`):** **0 LLM tokens** (pure local CPU, `<0.5s`, Python 3 stdlib only).
-- **Idle Prompt Overhead:** **~180 tokens/turn** (only the 2-line skill frontmatter descriptions load by default via progressive disclosure).
-- **Silent `Stop` Hooks:** **0 LLM tokens when checks pass**—only wakes the agent up for 1 corrective turn when a real invariant, codegen target, locale file, or structural evolution (`docs/domains/*.md` / `dependency-matrix.md`) needs attention.
-- **Self-Evolving Dependency Graph & Domain Routing:** `build_atlas.py` automatically extracts internal import & reverse-dependent graphs (`04_DEPENDENCY_GRAPH.md`) across Go, TS/JS, Python, and Rust on every turn, and auto-discovers any new `docs/domains/<domain>.md` via its `> **Paths:**` header—zero edits to `SKILL.md` or `AGENTS.md` required as new domains emerge.
 
 ---
 
-## Quickstart & Installation
+## 3. How `pak` Works Under the Hood (Architecture & Logic)
+
+### Layer 1: Lean Constitution + Progressive-Disclosure Skills
+Instead of bloating `AGENTS.md` or `CLAUDE.md` with thousands of lines of architecture prose, `pak init` inserts a tiny ~15-line `<!-- PAK:START --> ... <!-- PAK:END -->` routing block (preserving all your existing rules). Detailed workflows live inside four skills (`pak-atlas`, `pak-impact`, `pak-domains`, `pak-bootstrap`) whose full instructions are loaded **only** when triggered.
+
+### Layer 2: Incremental SQLite + FTS5 Symbol & Dependency Engine
+`scripts/pak/build_atlas.py` maintains `.pak/index.sqlite` (automatically gitignored via `.pak/.gitignore`) and renders 6 human- and grep-friendly markdown/JSON files in `docs/atlas/`:
+- **Incremental `(mtime_ns, size)` Cache:** On every run, `build_atlas.py` stats source files across **Go, TypeScript/JS/React, Python, Rust, SQL, Protobuf, Prisma, GraphQL, and CSS**. Only modified or newly added files are re-parsed; unchanged files are read straight from SQLite in milliseconds.
+- **BM25 Full-Text Search (`symbols_fts`):** Uses SQLite's built-in `FTS5` engine so `pak trace <query>` ranks matching symbols, interfaces, SQL queries, and components instantaneously.
+- **Reverse-Dependent Graph (`04_DEPENDENCY_GRAPH.md`):** Extracts internal `import` and `use` edges across Go packages, TS/JS modules (including `./`, `../`, and `@/` aliases), Python modules, and Rust crates—rendering both outbound imports (`A -> B`) and **Reverse Dependents (`B <- A, C, D`)** so the agent immediately sees every downstream caller before editing `B`.
+
+### Layer 3: Self-Routing Domain Dossiers (`docs/domains/*.md`)
+Static code indexes tell an agent *what functions exist*, but not *business invariants, state machines, or subtle corner cases*. Those live in concise (`≤160 lines` each) domain dossiers inside `docs/domains/*.md`.
+
+Each dossier carries two header lines right below its title:
+
+```markdown
+# Domain Dossier: Payments & Invoicing
+
+> **Paths:** `internal/payments/|proto/billing\.proto|web/src/pages/Billing`
+> **Summary:** Stripe webhook idempotency, retry backoff, and currency rounding invariants.
+```
+
+**Zero Hardcoded Routing:** Whenever a new `docs/domains/<domain>.md` file is created, `build_atlas.py` automatically discovers it and registers it in `docs/atlas/00_SYSTEM_MAP.md`, and `pak trace` matches touched files against its `Paths` regex dynamically—you never have to edit `SKILL.md` or `AGENTS.md` as new domains are born.
+
+### Layer 4: Hidden Git Co-Change Mining (`git log` Probability)
+Static `import` analysis cannot see implicit couplings across languages or boundaries—such as a ClickHouse SQL table modified alongside a Python ingestion script and a TypeScript DTO, or two config files that must always change in lockstep.
+
+`build_atlas.py` scans the last 250 commits in `git log` (filtering out >20-file bulk formatting commits, unit-test twins like `foo.go <-> foo_test.go`, and pairs already linked by direct static imports) and computes conditional probability:
+
+$$P(B \text{ changes} \mid A \text{ changes}) = \frac{\text{commits}(A \cap B)}{\text{commits}(A)}$$
+
+Pairs meeting `cochange_min_commits` (default `3`) and `cochange_min_confidence` (default `0.65`) are recorded in `docs/atlas/05_COCHANGE_AND_CONTRACTS.md` and `contracts.json`, surfacing automatically during `pak trace`!
+
+### Layer 5: Multi-Repo Microservice & Event-Bus Federation
+For distributed microservice architectures spread across multiple Git repositories:
+1. In each repository, `build_atlas.py` extracts **HTTP/REST routes** (`provides` & `consumes`), **Protobuf RPCs**, **GraphQL/SQL schemas**, and **Event-Bus Pub/Sub topics** (`.Publish("invoice.paid")`, `.Subscribe("invoice.paid")`, `@EventPattern`, `CustomEvent`) into `docs/atlas/contracts.json`.
+2. Link sibling repositories via `pak link ../web-portal ../notification-worker` (or `"linked_repos"` in `pak.config.json`).
+3. Running `pak trace "invoice.paid"` inside `billing-service` immediately queries every linked repo's `contracts.json` and prints exact cross-repo consumers (`../web-portal/src/api/billingClient.ts:L5`).
+4. Modifying a file that provides an endpoint/topic consumed by a linked repo triggers an automatic cross-microservice impact notice in `pak check` / `verify_impact.sh`.
+
+### Layer 6: Multi-Vendor `Stop` Gate, Wire-Breaking & Duplicate Guards
+`scripts/pak/verify_impact.sh` speaks **all three enforcement protocols** natively from a single script:
+- **Google Antigravity (`--agy-hook`):** Emits `{"decision": "allow"}` or `{"decision": "continue", "reason": "..."}` (respecting `continuationActive` so it never loops infinitely).
+- **Anthropic Claude Code (`--claude-hook`):** Emits `{}` or `{"decision": "block", "reason": "..."}` (respecting `stop_hook_active` loop guard).
+- **OpenAI Codex CLI & Human Commits:** Runs via `.git/hooks/pre-commit` and `pak check`.
+
+On every dirty coding turn, `verify_impact.sh` enforces:
+1. **Quarantined Legacy Guard:** Blocks accidental edits to dead prototype directories/files listed in `quarantined_paths`.
+2. **Codegen Sync:** Verifies `proto`, `sqlc`, or `prisma` generated outputs updated whenever source contracts changed.
+3. **Wire-Breaking Contract & Migration Diff Guard:** Inspects `git diff HEAD` on `.proto` and SQL migration files—blocking deleted RPCs, removed/reassigned Protobuf field tag numbers without `reserved`, or destructive `DROP COLUMN` / `ALTER COLUMN TYPE` statements unless explicitly acknowledged.
+4. **Mechanical Near-Duplicate Function Detector:** Normalizes newly added function names into canonical action stems (mapping synonyms like `fetch`/`load`/`retrieve` → `get`, `render`/`fmt` → `format`, `calc`/`calculate` → `compute`) and queries `.pak/index.sqlite`. Adding `RenderAccountCurrency()` when `FormatAccountCurrency()` already exists in another package triggers an immediate reuse prompt with the exact `file:line`!
+5. **Multi-Locale i18n Key Parity:** Verifies all `<locale>.json` catalogs match `en.json` key-for-key in `<80ms`.
+6. **Self-Evolving Architecture Gate:** If a turn modifies schemas/contracts, adds a new source module, or introduces a new dependency edge in `04_DEPENDENCY_GRAPH.md` without updating `docs/domains/*.md` or `dependency-matrix.md`, blocks the AI `Stop` hook once so domain docs evolve in the same commit.
+
+### Layer 7: Graph-Driven Affected-Only Test Runner (`pak affected`)
+To prevent 30-minute full-suite test bottlenecks on large projects, `pak affected` reads your `git diff`, walks **2 hops up the Reverse-Dependent Graph** in `.pak/index.sqlite`, and computes (or executes with `--run`) **only** the impacted Go packages, Vitest/Jest test files, or Pytest modules—verifying changes in **1–3 seconds**.
+
+---
+
+## 4. Installation & Quickstart
 
 **Requirements:** Python 3.9+, Bash, Git *(zero `pip` or `npm` packages required)*.
 
-### Option A: Install `pak` Globally on Your Machine (Recommended)
+### Option A: Global `pak` CLI Install (Recommended)
 
 ```bash
 git clone https://github.com/zahei/project-awareness-kit.git ~/projects/project-awareness-kit
 cd ~/projects/project-awareness-kit
 ./pak install-cli
 ```
+*(Ensure `~/.local/bin` is in your `PATH`.)*
 
-Now from **any** new or existing project directory, simply run:
+Then inside **any** project repository:
 
 ```bash
 cd /path/to/your-project
 pak init
 ```
 
-### Option B: Direct One-Line / Interactive Injection Without Global Install
+### Option B: Direct / Non-Interactive CI Install
 
 ```bash
-# Interactive wizard (prompts for AI ecosystems, greenfield vs existing, hooks, & guardrails):
+# Interactive wizard (prompts for AI ecosystems, greenfield vs existing, hooks, UUIDv7, i18n & linked repos):
 bash /path/to/project-awareness-kit/install.sh /path/to/your-project
 
-# Non-interactive CI / scripted install (all 3 ecosystems + AI & Git hooks):
-./pak init /path/to/your-project --yes --agents all --stage existing --hooks both
+# Non-interactive install configuring Google + Anthropic + OpenAI + sibling microservice links:
+pak init /path/to/your-project --yes --agents all --stage existing --hooks both --link-repos "../auth-svc,../web-app"
 ```
 
 ---
 
-## Interactive Installer Choices
+## 5. Onboarding Workflows: Greenfield vs. Existing Complex Codebases
 
-Running `pak init` interactively lets you tailor the installation in 15 seconds:
+### Starting a Brand-New (Greenfield) Project
+1. Run `pak init` and select **`greenfield`**.
+2. Start building normally in `agy`, `claude`, or `codex`.
+3. As new modules, migrations, and domains are created, `build_atlas.py` updates `docs/atlas/*` automatically and the `Stop` hook prompts your agent to create/update `docs/domains/<domain>.md` dossiers incrementally—so the project **never** loses context from Day 1 to 500k LOC.
 
-1. **Target AI Ecosystems:** `all` *(Google + Anthropic + OpenAI)*, `google`, `anthropic`, `openai`, or custom combination.
-2. **Project Stage:**
-   - **`greenfield`** — Seeds `docs/domains/00-core-architecture.md` and auto-maintains `docs/atlas/*` from commit #1.
-   - **`existing`** — Auto-detects your stack (`Go`, `TS/JS/React`, `Python`, `Rust`, `SQL`, `Protobuf`, `Prisma`, `GraphQL`), generates `docs/atlas/*` immediately, and installs the `pak-bootstrap` skill.
-3. **Verification Gates:** `both` *(AI `Stop` hooks + Git `pre-commit`)*, `ai`, `git`, or `none`.
-4. **Built-in Guardrails:** Optional **UUIDv7** enforcement and auto-detected **multi-locale i18n JSON parity**.
-
-> **Safe Non-Destructive Merging:** `pak init` uses `<!-- PAK:START --> ... <!-- PAK:END -->` blocks in `AGENTS.md`/`CLAUDE.md`/`GEMINI.md` and deep-merges JSON keys into `.agents/hooks.json` and `.claude/settings.json`. It **never** overwrites your existing rules, MCP configs, or permissions.
-
----
-
-## Onboarding an Existing Complex Project (`/pak-bootstrap`)
-
-After running `pak init` on an existing repository, open `agy`, `claude`, or `codex` and run a one-time audit:
-
-> `"Activate the pak-bootstrap skill to audit this codebase, quarantine dead docs/paths in pak.config.json, and write docs/domains/*.md dossiers."`
-
-What `pak-bootstrap` does automatically:
-1. Runs `scripts/pak/build_atlas.py` (`0` tokens) to map all live functions, types, tables, endpoints, and internal module dependencies (`04_DEPENDENCY_GRAPH.md`).
-2. Cross-checks existing `.md` files against actual build files and migrations—fixing stale documentation and quarantining dead prototype folders in `pak.config.json`.
-3. Writes concise (`≤160 lines`), self-routing `docs/domains/<domain>.md` dossiers capturing workflows, formulas, and corner cases.
-4. Populates `.agents/skills/pak-impact/references/dependency-matrix.md` with implicit runtime couplings.
+### Onboarding an Existing Complex / Multi-Service Codebase
+1. Run `pak init` in each repository (and link sibling services via `pak link ../other-service` if multi-repo).
+2. Open `agy`, `claude`, or `codex` in the repository and send:
+   > `"Activate the pak-bootstrap skill to audit this codebase, quarantine dead docs/paths in pak.config.json, and write self-routing docs/domains/*.md dossiers."`
+3. Commit the generated `pak.config.json`, `docs/atlas/*`, `docs/domains/*.md`, and skill/hook files.
 
 ---
 
-## How `pak` Evolves Automatically as Your Project Grows
-
-You never have to manually edit `AGENTS.md` or `SKILL.md` files as your architecture expands. `pak` keeps project memory and blast-radius awareness synchronized automatically through three mechanisms:
-
-### 1. Auto-Generated Dependency & Reverse-Dependent Graph (`04_DEPENDENCY_GRAPH.md`)
-On every check/turn, `build_atlas.py` parses internal `import` / `use` statements across **Go**, **TypeScript/JavaScript/React**, **Python**, and **Rust** (`0` LLM tokens) to maintain `docs/atlas/04_DEPENDENCY_GRAPH.md`:
-- **Outbound Imports:** `Package / Page -> Dependencies`
-- **Reverse Dependents (`<-`):** Instant *"Who imports module/component `X`?"* blast-radius map before editing any shared code.
-
-### 2. Self-Routing Domain Dossiers (`> **Paths:**` Metadata)
-Each file in `docs/domains/*.md` declares the paths it owns at the top of the file:
-
-```markdown
-# Domain Dossier: Payments & Billing
-
-> **Paths:** `internal/payments/|proto/billing\.proto|web/src/pages/Billing`
-> **Summary:** Stripe webhook idempotency, invoice state machine, and retry rules.
-```
-
-Whenever a new domain file is added to `docs/domains/`, `build_atlas.py` automatically registers it in `docs/atlas/00_SYSTEM_MAP.md` and `pak trace` (`blast_radius.sh`) routes matching queries and files to it dynamically—zero skill or script edits required.
-
-### 3. Mechanical Structural-Evolution Gate (`Stop` Hook)
-Whenever an AI turn modifies **DB migrations / API schemas** (`.sql`, `.proto`, `.prisma`, `.graphql`), creates a **new source module/component**, or introduces a **new internal dependency edge** in `04_DEPENDENCY_GRAPH.md`—without updating any `docs/domains/*.md` dossier or `dependency-matrix.md`—`verify_impact.sh` blocks the `Stop` hook once (`agy` and `claude`) so the agent updates the affected domain dossier (or creates a new one) in the same commit.
-- Loop-safe: Honors `continuationActive` (Antigravity) and `stop_hook_active` (Claude Code) so pure refactors never cause infinite loops.
-- CI / CLI flags: Set `PAK_STRICT_DOCS=1` to enforce strict dossier updates in CI/CLI mode, or `PAK_ACK_NO_DOC_IMPACT=1` to acknowledge a pure structural refactor with no domain-workflow change.
-
----
-
-## CLI Reference
+## 6. Complete CLI Reference
 
 ```bash
-pak init [dir]          # Interactive (or --yes) setup in target repository
-pak install-cli         # Symlink `pak` into ~/.local/bin/pak
-pak atlas [dir]         # Regenerate docs/atlas/00..04_*.md (<0.5s, 0 tokens)
-pak trace <query> [dir] # Trace reusable symbols, reverse dependents, schemas & domain dossiers
-pak check [dir]         # Run deterministic codegen, dependency-graph, regex, i18n & evolution checks
-pak uninstall [dir]     # Cleanly remove pak blocks, skills, and scripts
+pak init [dir]                   # Interactive (or --yes) installer for any repository
+pak link <sibling_repo...>       # Link sibling microservice repos for cross-repo contract tracing
+pak install-cli                  # Symlink `pak` into ~/.local/bin/pak
+pak atlas [dir]                  # Incrementally update .pak/index.sqlite & docs/atlas/00..05 (<50ms)
+pak trace <query> [dir]          # Search FTS5 symbols, reverse dependents, co-changes & sibling repos
+pak affected [--run] [dir]       # Print (or execute) ONLY unit tests impacted by current git diff
+pak check [dir]                  # Run all contract, duplicate, dependency, codegen, i18n & evolution gates
+pak uninstall [dir]              # Cleanly remove pak blocks, skills, SQLite cache, and scripts
 ```
 
 ---
 
-## Customizing Project Rules (`pak.config.json`)
+## 7. Configuration Reference (`pak.config.json` & Environment Flags)
 
-Every installed project gets a clean `pak.config.json` at its root (see [`examples/pak.config.fullstack.json`](./examples/pak.config.fullstack.json)):
+See [`examples/pak.config.fullstack.json`](./examples/pak.config.fullstack.json) for a complete production example:
 
-- **`quarantined_paths`**: Obsolete folders or SQL dumps ignored by the Atlas and blocked from accidental edits.
-- **`generated_paths`**: Directories skipped during symbol indexing (`dist`, `gen`, `sqlc`, `node_modules`).
-- **`codegen_pairs`**: Source-to-generated regex pairs ensuring `proto`, `sqlc`, `prisma`, or `openapi` outputs are regenerated whenever contracts change.
-- **`checks.enforce_uuid_v7`**: Blocks `uuid.New()` / `uuidv4()` / `crypto.randomUUID()` when `true`.
-- **`checks.i18n_locales_dir`**: Verifies all `<locale>.json` files match `en.json` key-for-key in `<80ms`.
-- **`checks.banned_patterns`**: Array of `{ "regex", "path_regex", "message" }` rules for custom architectural or design-system invariants (e.g., blocking raw unadjusted SQL table reads or off-palette Tailwind colors).
+| Key | Description |
+| :--- | :--- |
+| `project_name` | Logical service/project identifier exported in `docs/atlas/contracts.json`. |
+| `agents` | Configured AI ecosystems (`["google", "anthropic", "openai"]`). |
+| `linked_repos` | Relative or absolute paths to sibling microservice repositories for cross-service impact checks. |
+| `quarantined_paths` | Dead prototype folders or obsolete SQL dumps excluded from indexing and blocked from edits. |
+| `generated_paths` | Build/codegen directories skipped during symbol indexing (`dist`, `gen`, `sqlc`, `node_modules`). |
+| `codegen_pairs` | `{ "name", "source_regex", "generated_regex", "remedy" }` rules enforcing fresh code generation. |
+| `checks.enforce_uuid_v7` | Blocks `uuid.New()` / `uuidv4()` / `crypto.randomUUID()` calls when `true`. |
+| `checks.detect_duplicate_symbols` | Mechanically detects newly added functions whose normalized stem duplicates an existing helper. |
+| `checks.detect_breaking_contracts` | Blocks wire-breaking `.proto` tag/RPC deletions and unacknowledged `DROP COLUMN` migrations. |
+| `checks.cochange_min_commits` | Minimum shared commits in `git log` (default `3`) to record a hidden temporal coupling. |
+| `checks.cochange_min_confidence` | Minimum conditional probability $P(B \mid A)$ (default `0.65`) for git co-change pairs. |
+| `checks.i18n_locales_dir` | Directory of `<locale>.json` files verified for 100% key parity against `i18n_base_locale`. |
+| `checks.banned_patterns` | Custom `{ "regex", "path_regex", "message" }` architectural or UI design-token invariants. |
+
+### Escape-Hatch & CI Environment Variables
+When an intentional breaking change, distinct similarly-named function, or pure structural refactor is desired:
+- `PAK_ALLOW_BREAKING=1` — Permits intentional wire-breaking Protobuf or destructive SQL migration changes (or add `-- pak:allow-destructive` inside the SQL file).
+- `PAK_ALLOW_DUPLICATE=1` — Permits adding a function whose stem matches an existing function in another module.
+- `PAK_STRICT_DOCS=1` — Enforces the structural-evolution dossier check as a hard error in CLI/CI mode (always active on first pass in AI `Stop` hooks).
+- `PAK_ACK_NO_DOC_IMPACT=1` — Acknowledges a pure structural refactor that has zero domain-workflow impact.
 
 ---
 
-## Running the Self-Test Suite
+## 8. Testing & Uninstalling
+
+Run the 8-stage automated end-to-end test suite (tests incremental SQLite caching, multi-vendor hooks, microservice federation, wire-breaking Protobuf guards, duplicate-symbol detection, `pak affected`, and clean uninstall):
 
 ```bash
 bash tests/smoke_test.sh

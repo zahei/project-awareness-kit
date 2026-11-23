@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # ==============================================================================
-# pak — Zero-Token Blast Radius, Dependency & Dynamic Domain Tracer
-# Usage: bash scripts/pak/blast_radius.sh "<symbol|table|rpc|component>"
+# pak v2.0 — SQLite FTS5, Reverse-Dependent, Federated Microservice & Domain Tracer
+# Usage: bash scripts/pak/blast_radius.sh "<symbol|table|rpc|topic|component>"
 # ==============================================================================
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -11,25 +11,25 @@ cd "$ROOT_DIR"
 
 QUERY="${1:-}"
 if [ -z "$QUERY" ]; then
-    echo "Usage: bash scripts/pak/blast_radius.sh <symbol|table|rpc|component>"
+    echo "Usage: bash scripts/pak/blast_radius.sh <symbol|table|rpc|topic|component>"
     exit 1
 fi
 
-if [ ! -f "docs/atlas/04_DEPENDENCY_GRAPH.md" ]; then
+if [ ! -f ".pak/index.sqlite" ] || [ ! -f "docs/atlas/05_COCHANGE_AND_CONTRACTS.md" ]; then
     python3 scripts/pak/build_atlas.py --quiet
 fi
 
-echo "=== 1. REUSE CATALOG & DEPENDENCY GRAPH MATCHES (docs/atlas/) ==="
-grep -rn -i -E "$QUERY" docs/atlas/ 2>/dev/null | head -n 35 || echo "  (none)"
-
-echo ""
-echo "=== 2. SOURCE CODE DEFINITIONS & CALLERS ==="
-python3 - "$QUERY" << 'PY'
-import json, os, re, sys
+exec python3 - "$QUERY" << 'PY'
+import json
+import os
+import re
+import sqlite3
+import sys
 from pathlib import Path
 
 query = sys.argv[1]
 rx = re.compile(query, re.IGNORECASE)
+
 cfg = {}
 if Path("pak.config.json").exists():
     try:
@@ -37,18 +37,88 @@ if Path("pak.config.json").exists():
     except Exception:
         pass
 
+# 1. Fast SQLite Symbol + FTS5 + Dependency + Contract Lookup
+print("=== 1. INDEXED SYMBOLS, CONTRACTS & REVERSE DEPENDENTS (.pak/index.sqlite) ===")
+db_path = Path(".pak/index.sqlite")
+atlas_hits = []
+if db_path.exists():
+    conn = sqlite3.connect(str(db_path))
+    fts_token = re.sub(r"[^A-Za-z0-9_]", " ", query).strip()
+    rows = []
+    if fts_token and " " not in fts_token:
+        try:
+            rows = conn.execute(
+                "SELECT path, name, signature FROM symbols_fts WHERE symbols_fts MATCH ? LIMIT 20",
+                (f'"{fts_token}"*',),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+    if not rows:
+        rows = conn.execute(
+            "SELECT path, name, signature FROM symbols WHERE name LIKE ? OR signature LIKE ? LIMIT 20",
+            (f"%{query}%", f"%{query}%"),
+        ).fetchall()
+    for p, _, sig in rows:
+        atlas_hits.append(f"[SYMBOL] {p}: `{sig}`")
+
+    for proto, direction, ep, p, line in conn.execute(
+        "SELECT protocol, direction, endpoint, path, line FROM contracts WHERE endpoint LIKE ? OR detail LIKE ? LIMIT 15",
+        (f"%{query}%", f"%{query}%"),
+    ):
+        atlas_hits.append(f"[{proto} {direction.upper()}] `{ep}` ({p}:L{line})")
+
+    for src, dst in conn.execute(
+        "SELECT DISTINCT src_path, dst_target FROM imports WHERE dst_target LIKE ? OR src_path LIKE ? LIMIT 15",
+        (f"%{query}%", f"%{query}%"),
+    ):
+        atlas_hits.append(f"[DEP] `{dst}` <- imported by `{src}`")
+    conn.close()
+
+if atlas_hits:
+    for h in atlas_hits[:30]:
+        print(" ", h)
+else:
+    print("  (none)")
+
+# 2. Federated Cross-Repo / Microservice Consumer Lookup (`linked_repos`)
+linked = cfg.get("linked_repos", [])
+if linked:
+    print("\n=== 2. FEDERATED SIBLING MICROSERVICE IMPACTS (linked_repos) ===")
+    fed_hits = []
+    for lr in linked:
+        lr_root = Path(lr).resolve()
+        manifest_path = lr_root / "docs" / "atlas" / "contracts.json"
+        if not manifest_path.exists():
+            continue
+        try:
+            m = json.loads(manifest_path.read_text(encoding="utf-8"))
+            svc = m.get("service", lr_root.name)
+            for kind_key in ("provides", "consumes"):
+                for item in m.get(kind_key, []):
+                    blob = f"{item.get('endpoint', '')} {item.get('detail', '')} {item.get('path', '')}"
+                    if rx.search(blob):
+                        fed_hits.append(
+                            f"[{svc} {kind_key.upper()} {item.get('protocol')}] `{item.get('endpoint')}` ({lr}/{item.get('path')}:L{item.get('line')})"
+                        )
+        except Exception:
+            pass
+    if fed_hits:
+        for fh in fed_hits[:20]:
+            print(" ", fh)
+    else:
+        print("  (no cross-repo contract matches)")
+
+# 3. Direct Source & Schema Line Occurrences + Git Co-Change Hints
 skip_dirs = {
-    ".git", ".agents", ".agent", ".claude", ".codex", ".cursor",
+    ".git", ".pak", ".agents", ".agent", ".claude", ".codex", ".cursor",
     "node_modules", "dist", "build", ".next", "target", "vendor",
     "coverage", ".venv", "venv", "__pycache__", "docs", "locales"
 }
 skip_prefixes = [p.strip("/") for p in cfg.get("quarantined_paths", []) + cfg.get("generated_paths", []) if p.strip("/")]
-
 code_exts = {".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".rs", ".java", ".kt", ".cs", ".rb", ".php"}
 schema_exts = {".sql", ".proto", ".prisma", ".graphql", ".gql", ".yaml", ".yml"}
 
 code_hits, schema_hits, matched_files = [], [], set()
-
 for dirpath, dirnames, filenames in os.walk("."):
     rel_dir = dirpath.lstrip("./")
     dirnames[:] = sorted(
@@ -76,18 +146,35 @@ for dirpath, dirnames, filenames in os.walk("."):
         except Exception:
             pass
 
-for h in code_hits[:45]:
+print("\n=== 3. SOURCE CODE CALLERS & DEFINITIONS ===")
+for h in code_hits[:35]:
     print(h)
 if not code_hits:
     print("  (none)")
 
-print("\n=== 3. SCHEMA / CONTRACT / CONFIG REFERENCES ===")
-for h in schema_hits[:25]:
-    print(h)
-if not schema_hits:
-    print("  (none)")
+if schema_hits:
+    print("\n=== 4. SCHEMA / CONTRACT REFERENCES ===")
+    for h in schema_hits[:20]:
+        print(h)
 
-print("\n=== 4. RECOMMENDED DOMAIN DOSSIERS (Dynamic Discovery via Paths Header) ===")
+# Surface hidden git co-change partners for matched files
+manifest_local = Path("docs/atlas/contracts.json")
+if manifest_local.exists() and matched_files:
+    try:
+        cochanges = json.loads(manifest_local.read_text(encoding="utf-8")).get("cochanges", [])
+        co_hits = [
+            f"`{c['when_editing']}` <-> `{c['also_check']}` ({int(c['confidence']*100)}% co-change across {c['co_commits']} commits)"
+            for c in cochanges
+            if c["when_editing"] in matched_files or c["also_check"] in matched_files
+        ]
+        if co_hits:
+            print("\n=== 5. HIDDEN GIT CO-CHANGE PARTNERS ===")
+            for ch in co_hits[:10]:
+                print(" ", ch)
+    except Exception:
+        pass
+
+print("\n=== RECOMMENDED DOMAIN DOSSIERS (Dynamic Discovery) ===")
 domains_dir = Path("docs/domains")
 paths_re = re.compile(r"^>\s*\*\*Paths:\*\*\s*`?([^`\n]+)`?", re.IGNORECASE)
 if domains_dir.exists():
@@ -113,8 +200,7 @@ if domains_dir.exists():
             hit = True
         if hit:
             matched.append(d.as_posix())
-    target_list = matched if matched else [d.as_posix() for d in dossiers]
-    for d in target_list[:10]:
+    for d in (matched if matched else [d.as_posix() for d in dossiers])[:10]:
         print(f"  - {d}")
 else:
     print("  - (none yet — run pak-bootstrap skill)")

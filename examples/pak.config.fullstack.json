@@ -1,6 +1,11 @@
 {
   "project_name": "acme-platform",
   "agents": ["google", "anthropic", "openai"],
+  "linked_repos": [
+    "../acme-auth-service",
+    "../acme-notification-worker",
+    "../acme-web-portal"
+  ],
   "quarantined_paths": [
     "legacy/old-prototype",
     "sql/old_prisma_dump.sql"
@@ -28,6 +33,10 @@
   ],
   "checks": {
     "enforce_uuid_v7": true,
+    "detect_duplicate_symbols": true,
+    "detect_breaking_contracts": true,
+    "cochange_min_commits": 3,
+    "cochange_min_confidence": 0.65,
     "i18n_locales_dir": "web/src/locales",
     "i18n_base_locale": "en.json",
     "banned_patterns": [

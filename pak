@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-pak — Project Awareness Kit CLI & Interactive Multi-Agent Installer
+pak v2.0 — Project Awareness Kit CLI & Multi-Agent / Multi-Microservice Installer
 Compatible with Google (Antigravity `agy` / Gemini CLI), Anthropic (`claude` Claude Code),
 and OpenAI (`codex` Codex CLI) + Cursor/Windsurf (`AGENTS.md`).
 """
@@ -71,12 +71,11 @@ def detect_repo_features(target: Path) -> Dict[str, Any]:
     if list(target.glob("**/schema.prisma")):
         stacks.append("Prisma")
 
-    # Auto-detect i18n locales dir containing en.json
     i18n_dir = ""
     for candidate in sorted(target.glob("**/locales/en.json")):
-        rel = candidate.parent.relative_to(target).as_posix()
-        if "node_modules" not in rel and ".git" not in rel:
-            i18n_dir = rel
+        rel_p = candidate.parent.relative_to(target).as_posix()
+        if "node_modules" not in rel_p and ".git" not in rel_p:
+            i18n_dir = rel_p
             break
 
     has_code = bool(stacks) or any(
@@ -170,7 +169,6 @@ def configure_claude_hooks(target: Path) -> None:
     stop_list: List[Any] = hooks_obj.setdefault("Stop", [])
     pak_cmd = '"$CLAUDE_PROJECT_DIR/scripts/pak/verify_impact.sh" --claude-hook'
 
-    # Avoid duplicate insertion
     already_present = any("scripts/pak/verify_impact.sh" in json.dumps(entry) for entry in stop_list)
     if not already_present:
         stop_list.append(
@@ -232,14 +230,13 @@ def cmd_init(args: argparse.Namespace) -> int:
     target.mkdir(parents=True, exist_ok=True)
     detected = detect_repo_features(target)
 
-    print(f"{BOLD}{CYAN}==> pak (Project Awareness Kit) Installer{RESET}")
+    print(f"{BOLD}{CYAN}==> pak v2.0 (Project Awareness Kit) Installer{RESET}")
     print(f"    Target project : {target}")
     if detected["stacks"]:
         print(f"    Detected stack : {', '.join(detected['stacks'])}")
 
     interactive = sys.stdin.isatty() and not args.yes
 
-    # 1. Resolve Agents
     if args.agents:
         agents = parse_agents_arg(args.agents)
     elif interactive:
@@ -262,7 +259,6 @@ def cmd_init(args: argparse.Namespace) -> int:
     else:
         agents = {"google", "anthropic", "openai"}
 
-    # 2. Resolve Project Stage
     if args.stage:
         stage = args.stage
     elif interactive:
@@ -270,15 +266,14 @@ def cmd_init(args: argparse.Namespace) -> int:
         stage = ask_choice(
             "2. What stage is this project in?",
             [
-                ("existing", "Existing / complex codebase (index live symbols now + install /pak-bootstrap audit)"),
-                ("greenfield", "Brand-new / greenfield project (seed starter domain dossier & atlas)"),
+                ("existing", "Existing / complex codebase (build SQLite Atlas now + install /pak-bootstrap audit)"),
+                ("greenfield", "Brand-new / greenfield project (seed starter domain dossier & SQLite Atlas)"),
             ],
             default_idx=default_stage,
         )
     else:
         stage = "existing" if detected["has_existing_code"] else "greenfield"
 
-    # 3. Resolve Hooks / Enforcement Gates
     if args.hooks:
         hooks_mode = args.hooks
     elif interactive:
@@ -288,31 +283,34 @@ def cmd_init(args: argparse.Namespace) -> int:
                 ("both", "Both AI Stop hooks (.agents/hooks.json + .claude/settings.json) AND Git pre-commit hook"),
                 ("ai", "AI Stop lifecycle hooks only (0 LLM tokens when checks pass)"),
                 ("git", "Git pre-commit hook only (.git/hooks/pre-commit)"),
-                ("none", "Manual CLI checks only (`bash scripts/pak/verify_impact.sh`)"),
+                ("none", "Manual CLI checks only (`pak check` / `scripts/pak/verify_impact.sh`)"),
             ],
             default_idx=1,
         )
     else:
         hooks_mode = "both"
 
-    # 4. Resolve Optional Invariant Packs
     enforce_uuid_v7 = bool(args.uuid_v7)
     i18n_dir = args.i18n_dir if args.i18n_dir is not None else detected["i18n_dir"]
+    linked_repos = [x.strip() for x in (args.link_repos or "").split(",") if x.strip()]
+
     if interactive and not args.uuid_v7:
         enforce_uuid_v7 = ask_yes_no("4. Enforce time-ordered UUIDv7 (block UUIDv4 calls in new edits)?", default=False)
-    if interactive and args.i18n_dir is None:
-        if detected["i18n_dir"]:
-            use_i18n = ask_yes_no(
-                f"5. Enforce multi-locale key parity on detected '{detected['i18n_dir']}'?",
-                default=True,
-            )
-            i18n_dir = detected["i18n_dir"] if use_i18n else ""
+    if interactive and args.i18n_dir is None and detected["i18n_dir"]:
+        use_i18n = ask_yes_no(
+            f"5. Enforce multi-locale key parity on detected '{detected['i18n_dir']}'?",
+            default=True,
+        )
+        i18n_dir = detected["i18n_dir"] if use_i18n else ""
+    if interactive and not linked_repos:
+        if ask_yes_no("6. Link sibling microservice repositories for cross-repo impact analysis?", default=False):
+            raw_lr = input(f"{CYAN}Enter comma-separated relative/absolute repo paths (e.g. ../auth-svc,../web-app): {RESET}").strip()
+            linked_repos = [x.strip() for x in raw_lr.split(",") if x.strip()]
 
-    # --- Execute Installation ---
     # A. Install scripts/pak/*
     dst_scripts = target / "scripts" / "pak"
     dst_scripts.mkdir(parents=True, exist_ok=True)
-    for script_name in ("build_atlas.py", "blast_radius.sh", "verify_impact.sh"):
+    for script_name in ("build_atlas.py", "blast_radius.sh", "verify_impact.sh", "affected_tests.py"):
         src = TEMPLATES_DIR / "scripts" / "pak" / script_name
         dst = dst_scripts / script_name
         shutil.copy2(src, dst)
@@ -331,12 +329,17 @@ def cmd_init(args: argparse.Namespace) -> int:
         cfg["project_name"] = target.name
 
     cfg["agents"] = sorted(agents)
+    if linked_repos:
+        existing_lr = cfg.get("linked_repos", [])
+        cfg["linked_repos"] = sorted(set(existing_lr + linked_repos))
     cfg.setdefault("checks", {})
     cfg["checks"]["enforce_uuid_v7"] = enforce_uuid_v7
     cfg["checks"]["i18n_locales_dir"] = i18n_dir
+    cfg["checks"].setdefault("detect_duplicate_symbols", True)
+    cfg["checks"].setdefault("detect_breaking_contracts", True)
     cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
 
-    # C. Install Skills for Selected Ecosystems
+    # C. Install Skills
     skill_names = ["pak-atlas", "pak-impact", "pak-domains", "pak-bootstrap"]
     needs_agents_skills = bool(agents & {"google", "openai"})
     include_openai_meta = "openai" in agents
@@ -353,7 +356,6 @@ def cmd_init(args: argparse.Namespace) -> int:
         for sname in skill_names:
             dst_c = claude_skills_root / sname
             if needs_agents_skills:
-                # Symlink to .agents/skills/<sname> so dependency-matrix.md stays single-source-of-truth
                 if dst_c.is_symlink() or dst_c.exists():
                     if dst_c.is_symlink() or dst_c.is_file():
                         dst_c.unlink()
@@ -366,7 +368,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             else:
                 copy_skill_tree(TEMPLATES_DIR / "skills" / sname, dst_c, False)
 
-    # D. Upsert Lean Always-On Rules (Non-Destructive)
+    # D. Upsert Lean Always-On Rules
     snippet = (TEMPLATES_DIR / "AGENTS.snippet.md").read_text(encoding="utf-8")
     if not needs_agents_skills and "anthropic" in agents:
         snippet = snippet.replace(".agents/skills/", ".claude/skills/")
@@ -377,7 +379,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         gemini_pointer = (
             f"{PAK_MD_START}\n"
             "## Project Awareness Kit (`pak`)\n"
-            "Follow all reuse, blast-radius, and domain-dossier rules in `AGENTS.md` (`docs/atlas/*` & `docs/domains/*`).\n"
+            "Follow all reuse, blast-radius, microservice-contract, and domain-dossier rules in `AGENTS.md` (`docs/atlas/*` & `docs/domains/*`).\n"
             f"{PAK_MD_END}"
         )
         upsert_markdown_block(target / "GEMINI.md", gemini_pointer)
@@ -390,7 +392,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         )
         upsert_markdown_block(target / "CLAUDE.md", claude_snippet, f"# {target.name} — Claude Code Rules")
 
-    # E. Configure Deterministic Hooks
+    # E. Configure Hooks
     git_hook_installed = False
     if hooks_mode in ("both", "ai"):
         if "google" in agents:
@@ -400,7 +402,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     if hooks_mode in ("both", "git"):
         git_hook_installed = configure_git_pre_commit(target)
 
-    # F. Create docs/domains/ starter & generate initial zero-token Atlas
+    # F. Seed docs/domains/ & build initial SQLite Atlas
     domains_dir = target / "docs" / "domains"
     domains_dir.mkdir(parents=True, exist_ok=True)
     if not list(domains_dir.glob("*.md")):
@@ -411,18 +413,33 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     subprocess.run([sys.executable, str(dst_scripts / "build_atlas.py")], cwd=str(target), check=True)
 
-    print(f"\n{GREEN}{BOLD}==> pak installed successfully into {target}!{RESET}")
+    print(f"\n{GREEN}{BOLD}==> pak v2.0 installed successfully into {target}!{RESET}")
     print(f"    Configured ecosystems : {', '.join(sorted(agents))}")
     print(f"    Project stage         : {stage}")
-    print(f"    Verification gates    : {hooks_mode}" + (" (Note: no .git dir yet; run `pak init` again after `git init` for pre-commit)" if hooks_mode in ("both", "git") and not git_hook_installed else ""))
-    print(f"    Generated Atlas       : {target / 'docs/atlas/'}")
+    print(f"    Verification gates    : {hooks_mode}" + (" (run `pak init` again after `git init` for pre-commit)" if hooks_mode in ("both", "git") and not git_hook_installed else ""))
+    print(f"    SQLite FTS5 cache     : {target / '.pak/index.sqlite'} (auto-gitignored)")
     if stage == "existing":
         print(f"\n{YELLOW}{BOLD}Next Step (One-Time Brownfield Audit):{RESET}")
         print("  Open your AI CLI (`agy`, `claude`, or `codex`) in that project and send:")
         print(f'  {CYAN}"Activate the pak-bootstrap skill to audit this codebase, quarantine dead docs/paths, and write docs/domains/*.md dossiers."{RESET}')
-    else:
-        print(f"\n{YELLOW}{BOLD}Next Step (Greenfield Ready):{RESET}")
-        print("  Start building! Your AI agent will automatically maintain `docs/atlas/*` and `docs/domains/*` as the codebase grows.")
+    return 0
+
+
+def cmd_link(args: argparse.Namespace) -> int:
+    target = Path(args.target).expanduser().resolve()
+    cfg_path = target / "pak.config.json"
+    if not cfg_path.exists():
+        print(f"[pak] pak.config.json not found in {target}. Run `pak init` first.", file=sys.stderr)
+        return 1
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    existing = cfg.get("linked_repos", [])
+    for s in args.siblings:
+        if s not in existing:
+            existing.append(s)
+    cfg["linked_repos"] = existing
+    cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    subprocess.run([sys.executable, str(target / "scripts" / "pak" / "build_atlas.py")], cwd=str(target), check=False)
+    print(f"{GREEN}[pak] Linked sibling repo(s) {args.siblings} in {cfg_path}{RESET}")
     return 0
 
 
@@ -436,8 +453,6 @@ def cmd_install_cli(_: argparse.Namespace) -> int:
         link_path.unlink()
     os.symlink(pak_exec, link_path)
     print(f"{GREEN}[pak] Installed global CLI symlink: {link_path} -> {pak_exec}{RESET}")
-    if str(bin_dir) not in os.environ.get("PATH", ""):
-        print(f"{YELLOW}Tip: ensure ~/.local/bin is on your PATH (`export PATH=\"$HOME/.local/bin:$PATH\"`).{RESET}")
     return 0
 
 
@@ -463,41 +478,51 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
                 base.unlink()
             elif base.is_dir():
                 shutil.rmtree(base)
-    if (target / "scripts" / "pak").is_dir():
-        shutil.rmtree(target / "scripts" / "pak")
-    print(f"{GREEN}[pak] Removed pak rules, skills, and scripts from {target} (preserved docs/domains/ and pak.config.json).{RESET}")
+    for d in (target / "scripts" / "pak", target / ".pak"):
+        if d.is_dir():
+            shutil.rmtree(d)
+    print(f"{GREEN}[pak] Removed pak rules, skills, cache, and scripts from {target} (preserved docs/domains/ and pak.config.json).{RESET}")
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="pak",
-        description="pak (Project Awareness Kit) — Token-frugal context, reuse & blast-radius system for Google, Anthropic, and OpenAI coding agents.",
+        description="pak v2.0 (Project Awareness Kit) — Sub-second SQLite context, anti-duplication, microservice contract & blast-radius guardrails for AI coding agents.",
     )
     sub = p.add_subparsers(dest="command")
 
     p_init = sub.add_parser("init", help="Install or update pak in a target project (interactive by default)")
-    p_init.add_argument("target", nargs="?", default=".", help="Target project directory (default: current directory)")
-    p_init.add_argument("-y", "--yes", action="store_true", help="Non-interactive mode using flags/auto-detected defaults")
-    p_init.add_argument("--agents", default="", help="Agents to configure: all | google,anthropic,openai")
-    p_init.add_argument("--stage", choices=["existing", "greenfield"], default="", help="Project lifecycle stage")
+    p_init.add_argument("target", nargs="?", default=".", help="Target project directory")
+    p_init.add_argument("-y", "--yes", action="store_true", help="Non-interactive mode")
+    p_init.add_argument("--agents", default="", help="Agents: all | google,anthropic,openai")
+    p_init.add_argument("--stage", choices=["existing", "greenfield"], default="", help="Project stage")
     p_init.add_argument("--hooks", choices=["both", "ai", "git", "none"], default="", help="Verification gate mode")
     p_init.add_argument("--uuid-v7", action="store_true", help="Enable UUIDv7 invariant check")
-    p_init.add_argument("--i18n-dir", default=None, help="Relative path to JSON locale catalogs (e.g. web/src/locales)")
+    p_init.add_argument("--i18n-dir", default=None, help="Relative path to JSON locale catalogs")
+    p_init.add_argument("--link-repos", default="", help="Comma-separated sibling microservice repo paths")
 
-    sub.add_parser("install-cli", help="Symlink `pak` into ~/.local/bin/pak for global usage anywhere")
+    p_link = sub.add_parser("link", help="Link one or more sibling microservice repositories for federated contract checks")
+    p_link.add_argument("siblings", nargs="+", help="Relative or absolute paths to sibling pak-enabled repos")
+    p_link.add_argument("--target", default=".", help="Target project directory (default: .)")
 
-    p_atlas = sub.add_parser("atlas", help="Regenerate docs/atlas/* in a pak-enabled project")
+    sub.add_parser("install-cli", help="Symlink `pak` into ~/.local/bin/pak")
+
+    p_atlas = sub.add_parser("atlas", help="Incrementally update SQLite index & docs/atlas/* (<50ms)")
     p_atlas.add_argument("target", nargs="?", default=".")
 
-    p_trace = sub.add_parser("trace", help="Trace symbol reuse & cross-layer blast radius (0 LLM tokens)")
-    p_trace.add_argument("query", help="Symbol, table, RPC, or component regex to trace")
+    p_trace = sub.add_parser("trace", help="Trace FTS5 symbols, reverse dependents, sibling microservices & domain dossiers")
+    p_trace.add_argument("query", help="Symbol, table, RPC, event topic, or component to trace")
     p_trace.add_argument("target", nargs="?", default=".")
 
-    p_check = sub.add_parser("check", help="Run deterministic invariant, codegen & i18n verification")
+    p_aff = sub.add_parser("affected", help="Compute (or --run) ONLY the minimal unit tests impacted by current git diff")
+    p_aff.add_argument("--run", action="store_true", help="Execute impacted test commands immediately")
+    p_aff.add_argument("target", nargs="?", default=".")
+
+    p_check = sub.add_parser("check", help="Run deterministic contract, duplicate, dependency, codegen & evolution checks")
     p_check.add_argument("target", nargs="?", default=".")
 
-    p_un = sub.add_parser("uninstall", help="Cleanly remove pak hooks, skills, and rule blocks from a project")
+    p_un = sub.add_parser("uninstall", help="Cleanly remove pak hooks, skills, cache, and rule blocks")
     p_un.add_argument("target", nargs="?", default=".")
 
     return p
@@ -511,12 +536,17 @@ def main() -> int:
         return 0
     if args.command == "init":
         return cmd_init(args)
+    if args.command == "link":
+        return cmd_link(args)
     if args.command == "install-cli":
         return cmd_install_cli(args)
     if args.command == "atlas":
         return cmd_passthrough("build_atlas.py", args.target)
     if args.command == "trace":
         return cmd_passthrough("blast_radius.sh", args.target, [args.query])
+    if args.command == "affected":
+        extra = ["--run"] if args.run else []
+        return cmd_passthrough("affected_tests.py", args.target, extra)
     if args.command == "check":
         return cmd_passthrough("verify_impact.sh", args.target)
     if args.command == "uninstall":
