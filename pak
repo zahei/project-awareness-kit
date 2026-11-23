@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
-PAK_VERSION = "2.1.1"
+PAK_VERSION = "2.1.2"
 PAK_ROOT = Path(__file__).resolve().parent
 TEMPLATES_DIR = PAK_ROOT / "templates"
 
@@ -578,8 +578,61 @@ def cmd_link(args: argparse.Namespace) -> int:
     return 0
 
 
+def resolve_home_dir() -> Path:
+    env_home = os.environ.get("HOME", "").strip()
+    return Path(env_home).expanduser() if env_home else Path.home()
+
+
+def detect_login_shell() -> str:
+    sh = os.environ.get("SHELL", "").strip()
+    if not sh:
+        try:
+            import pwd
+            sh = pwd.getpwuid(os.getuid()).pw_shell
+        except Exception:
+            sh = ""
+    return Path(sh).name.lower() if sh else "sh"
+
+
+def upsert_shell_rc_path(rc_path: Path, line_expr: str) -> str:
+    block = f"{PAK_SH_START}\n{line_expr}\n{PAK_SH_END}"
+    if rc_path.exists():
+        existing = rc_path.read_text(encoding="utf-8", errors="replace")
+        if PAK_SH_START in existing and PAK_SH_END in existing:
+            before = existing.split(PAK_SH_START)[0].rstrip()
+            after = existing.split(PAK_SH_END, 1)[1].lstrip()
+            merged = "\n\n".join(p for p in (before, block, after) if p) + "\n"
+            rc_path.write_text(merged, encoding="utf-8")
+            return "updated"
+        if ".local/bin" in existing:
+            return "already_present"
+        rc_path.write_text(existing.rstrip() + "\n\n" + block + "\n", encoding="utf-8")
+        return "injected"
+    else:
+        rc_path.parent.mkdir(parents=True, exist_ok=True)
+        rc_path.write_text(block + "\n", encoding="utf-8")
+        return "created"
+
+
+def remove_shell_rc_path(rc_path: Path) -> bool:
+    if not rc_path.exists():
+        return False
+    txt = rc_path.read_text(encoding="utf-8", errors="replace")
+    if PAK_SH_START not in txt or PAK_SH_END not in txt:
+        return False
+    before = txt.split(PAK_SH_START)[0].rstrip()
+    after = txt.split(PAK_SH_END, 1)[1].lstrip()
+    merged = "\n\n".join(p for p in (before, after) if p).strip()
+    if merged:
+        rc_path.write_text(merged + "\n", encoding="utf-8")
+    else:
+        rc_path.unlink()
+    return True
+
+
 def cmd_install_cli(_: argparse.Namespace) -> int:
-    bin_dir = Path.home() / ".local" / "bin"
+    home = resolve_home_dir()
+    bin_dir = home / ".local" / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     link_path = bin_dir / "pak"
     pak_exec = PAK_ROOT / "pak"
@@ -588,9 +641,46 @@ def cmd_install_cli(_: argparse.Namespace) -> int:
         link_path.unlink()
     os.symlink(pak_exec, link_path)
     print(f"{GREEN}[pak] Installed global CLI symlink: {link_path} -> {pak_exec} (v{PAK_VERSION}){RESET}")
+
+    shell_name = detect_login_shell()
+    export_line = 'export PATH="$HOME/.local/bin:$PATH"'
+    fish_line = 'fish_add_path -g "$HOME/.local/bin"'
+
+    targets: List[tuple[Path, str]] = []
+    # Always configure the active login shell's primary RC file (creating ~/.zshrc on macOS/Linux zsh if absent)
+    if shell_name == "zsh" or (home / ".zshrc").exists():
+        targets.append((home / ".zshrc", export_line))
+        if (home / ".zprofile").exists():
+            targets.append((home / ".zprofile", export_line))
+    if shell_name == "bash" or (home / ".bashrc").exists() or (home / ".bash_profile").exists():
+        if (home / ".bashrc").exists() or shell_name == "bash":
+            targets.append((home / ".bashrc", export_line))
+        elif (home / ".bash_profile").exists():
+            targets.append((home / ".bash_profile", export_line))
+    if shell_name == "fish" or (home / ".config" / "fish" / "config.fish").exists():
+        targets.append((home / ".config" / "fish" / "config.fish", fish_line))
+    if not targets:
+        targets.append((home / ".profile", export_line))
+
+    touched_rcs: List[Path] = []
+    for rc_file, expr in targets:
+        status = upsert_shell_rc_path(rc_file, expr)
+        if status in ("created", "injected", "updated"):
+            touched_rcs.append(rc_file)
+            print(f"{GREEN}[pak] Configured PATH in {rc_file} ({status}){RESET}")
+        elif status == "already_present":
+            print(f"{CYAN}[pak] PATH already includes ~/.local/bin in {rc_file}{RESET}")
+
     path_dirs = os.environ.get("PATH", "").split(os.pathsep)
-    if str(bin_dir) not in path_dirs:
-        print(f"{YELLOW}[pak] Add to your shell profile if needed: export PATH=\"$HOME/.local/bin:$PATH\"{RESET}")
+    in_current_path = str(bin_dir) in path_dirs
+    if shell_name == "zsh":
+        if not in_current_path or touched_rcs:
+            print(f"{YELLOW}[pak] Activate in your current zsh tab: source ~/.zshrc && rehash{RESET}")
+        else:
+            print(f"{CYAN}[pak] Note for open zsh tabs: run 'rehash' if zsh cached command lookups before install.{RESET}")
+    elif not in_current_path or touched_rcs:
+        reload_rc = touched_rcs[0] if touched_rcs else (home / ".profile")
+        print(f"{YELLOW}[pak] Activate in your current shell: source {reload_rc}{RESET}")
     return 0
 
 
@@ -720,12 +810,25 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
 
 
 def cmd_uninstall_cli(_: argparse.Namespace) -> int:
-    link_path = Path.home() / ".local" / "bin" / "pak"
+    home = resolve_home_dir()
+    link_path = home / ".local" / "bin" / "pak"
     if link_path.is_symlink() or link_path.exists():
         link_path.unlink()
         print(f"{GREEN}[pak] Removed global CLI symlink: {link_path}{RESET}")
     else:
         print(f"{YELLOW}[pak] Global CLI symlink not found at {link_path} (already removed).{RESET}")
+
+    for rc in (
+        home / ".zshrc",
+        home / ".zprofile",
+        home / ".bashrc",
+        home / ".bash_profile",
+        home / ".profile",
+        home / ".config" / "fish" / "config.fish",
+    ):
+        if remove_shell_rc_path(rc):
+            print(f"{GREEN}[pak] Removed pak PATH block from {rc}{RESET}")
+
     print(f"To remove the pak repository itself, run: rm -rf {PAK_ROOT}")
     return 0
 

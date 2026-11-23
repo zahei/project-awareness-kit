@@ -135,14 +135,20 @@ To prevent 30-minute full-suite test bottlenecks on large projects, `pak affecte
 
 **Requirements:** Python 3.9+, Bash, Git *(zero `pip` or `npm` packages required)*.
 
-### Option A: Global `pak` CLI Install (Recommended)
+### Option A: Global `pak` CLI Install (Recommended — Auto-Configures `zsh`, `bash` & `fish`)
 
+**One-liner (macOS / Linux):**
+```bash
+curl -fsSL https://raw.githubusercontent.com/zahei/project-awareness-kit/main/install.sh | sh
+```
+
+**Or from a manual Git clone:**
 ```bash
 git clone https://github.com/zahei/project-awareness-kit.git ~/projects/project-awareness-kit
 cd ~/projects/project-awareness-kit
 ./pak install-cli
 ```
-*(Ensure `~/.local/bin` is in your `PATH`.)*
+`pak install-cli` symlinks `~/.local/bin/pak` and **automatically detects your login shell** (`zsh`, `bash`, or `fish`), injecting `PATH` inside `# --- PAK:START ---` markers in `~/.zshrc`, `~/.bashrc`, or `~/.config/fish/config.fish` (creating `~/.zshrc` automatically on fresh macOS/Linux `zsh` setups if absent). Run `source ~/.zshrc && rehash` (or open a new terminal tab) to activate `pak` in an already-open shell.
 
 Then inside **any** project repository:
 
@@ -259,8 +265,8 @@ pak uninstall --purge /path/to/your-project
 ### 3. System-Wide CLI Uninstall (`pak uninstall-cli`)
 To remove `pak` from your machine completely:
 ```bash
-pak uninstall-cli                        # Removes ~/.local/bin/pak symlink
-rm -rf ~/projects/project-awareness-kit  # Optional: delete cloned source repository
+pak uninstall-cli                        # Removes ~/.local/bin/pak AND strips pak PATH blocks from ~/.zshrc, ~/.bashrc & config.fish
+rm -rf ~/.local/share/project-awareness-kit ~/projects/project-awareness-kit  # Optional: delete cloned source repository
 ```
 
 ---

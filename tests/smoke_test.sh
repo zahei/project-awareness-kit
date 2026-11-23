@@ -227,4 +227,16 @@ python3 "$KIT_DIR/pak" uninstall --purge "$PROJ"
 [ ! -d "$PROJ/docs/domains" ]
 [ ! -f "$PROJ/pak.config.json" ]
 
-echo "==> ALL 9/9 PAK v2.1 SMOKE TESTS PASSED!"
+echo "==> [10/10] Verifying shell-aware 'pak install-cli' & 'pak uninstall-cli' (zsh/bash/fish PATH injection)..."
+FAKE_HOME="$(dirname "$PROJ")/fake_zsh_home"
+mkdir -p "$FAKE_HOME"
+HOME="$FAKE_HOME" SHELL="/bin/zsh" PATH="/usr/bin:/bin" python3 "$KIT_DIR/pak" install-cli
+[ -L "$FAKE_HOME/.local/bin/pak" ]
+[ -f "$FAKE_HOME/.zshrc" ]
+grep -q 'export PATH="$HOME/.local/bin:$PATH"' "$FAKE_HOME/.zshrc"
+
+HOME="$FAKE_HOME" SHELL="/bin/zsh" PATH="/usr/bin:/bin" python3 "$KIT_DIR/pak" uninstall-cli
+[ ! -e "$FAKE_HOME/.local/bin/pak" ]
+[ ! -f "$FAKE_HOME/.zshrc" ]
+
+echo "==> ALL 10/10 PAK v2.1.2 SMOKE TESTS PASSED!"
